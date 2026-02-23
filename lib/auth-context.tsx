@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import type { UserProfile, UserRole } from '@/types';
+import { checkRateLimit, RateLimitError } from '@/lib/rate-limit';
+import { validateLoginCredentials } from '@/lib/validation';
 
 interface AuthState {
   session: Session | null;
@@ -106,14 +108,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refreshProfile]);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    // Validate and rate-limit login attempts before hitting Supabase.
+    const validation = validateLoginCredentials({ email, password });
+    if (!validation.ok) {
+      return { error: new Error(validation.errors[0]) };
+    }
+
+    try {
+      checkRateLimit({
+        key: `auth:login:${email.toLowerCase() || 'anonymous'}`,
+      });
+    } catch (err) {
+      return { error: err as Error };
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
+    // Surface rate limit style errors with a clear message if the backend
+    // is enforcing 429s as well.
+    const anyError = error as unknown as { message?: string; status?: number } | null;
+    if (anyError && anyError.status === 429) {
+      return { error: new RateLimitError() };
+    }
+
     return { error: error as Error | null };
   }, []);
 
   const signUpWithEmail = useCallback(
     async (email: string, password: string, fullName?: string) => {
+      // Reuse the same credential constraints for signup.
+      const validation = validateLoginCredentials({ email, password });
+      if (!validation.ok) {
+        return { error: new Error(validation.errors[0]) };
+      }
+
+      try {
+        checkRateLimit({
+          key: `auth:signup:${email.toLowerCase() || 'anonymous'}`,
+        });
+      } catch (err) {
+        return { error: err as Error };
+      }
+
       const { error } = await supabase.auth.signUp({
-        email,
+        email: email.trim(),
         password,
         options: fullName ? { data: { full_name: fullName } } : undefined,
       });
@@ -123,6 +164,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signInWithGoogle = useCallback(async () => {
+    // Rate-limit OAuth attempts as well, using a coarse anonymous key.
+    try {
+      checkRateLimit({ key: 'auth:google', limit: 20 });
+    } catch (err) {
+      return { error: err as Error };
+    }
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
     });

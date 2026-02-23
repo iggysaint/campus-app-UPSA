@@ -14,6 +14,8 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '@/lib/auth-context';
 import { Card } from '@/components/ui/Card';
 import { COLORS, SPACING, RADIUS } from '@/constants/theme';
+import { validateLoginCredentials } from '@/lib/validation';
+import { RateLimitError } from '@/lib/rate-limit';
 
 export default function LoginScreen() {
   const { signInWithEmail, signInWithGoogle } = useAuth();
@@ -23,15 +25,21 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleEmailLogin = async () => {
-    if (!email.trim() || !password) {
-      Alert.alert('Error', 'Please enter email and password.');
+    const validation = validateLoginCredentials({ email, password });
+    if (!validation.ok) {
+      Alert.alert('Invalid credentials', validation.errors[0]);
       return;
     }
+
     setLoading(true);
     const { error } = await signInWithEmail(email.trim(), password);
     setLoading(false);
     if (error) {
-      Alert.alert('Login failed', error.message);
+      if (error instanceof RateLimitError) {
+        Alert.alert('Too many attempts', error.message);
+      } else {
+        Alert.alert('Login failed', error.message);
+      }
       return;
     }
     router.replace('/(tabs)');
