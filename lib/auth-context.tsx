@@ -24,22 +24,28 @@ interface AuthContextValue extends AuthState {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function fetchProfile(userId: string, fallbackEmail?: string, fallbackName?: string): Promise<UserProfile | null> {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, email, full_name, avatar_url, role, created_at, updated_at')
-    .eq('id', userId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, email, full_name, avatar_url, role, created_at, updated_at')
+      .eq('id', userId)
+      .single();
 
-  if (data) return data as UserProfile;
-  // No profiles table or row yet: use a synthetic profile so role defaults to student
-  if (fallbackEmail)
-    return {
-      id: userId,
-      email: fallbackEmail,
-      full_name: fallbackName ?? undefined,
-      role: 'student',
-    };
-  return null;
+    if (data) return data as UserProfile;
+    if (error) return null;
+
+    // No profiles table or row yet: use a synthetic profile so role defaults to student
+    if (fallbackEmail)
+      return {
+        id: userId,
+        email: fallbackEmail,
+        full_name: fallbackName ?? undefined,
+        role: 'student',
+      };
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -51,8 +57,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isAuthenticated: false,
   });
 
+  const safeGetSession = useCallback(async (): Promise<Session | null> => {
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) return null;
+      return data.session ?? null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const refreshProfile = useCallback(async () => {
-    const { data: { session } } = await supabase.auth.getSession();
+    const session = await safeGetSession();
     if (!session?.user) {
       setState((s) => ({ ...s, profile: null }));
       return;
@@ -63,11 +79,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       session.user.user_metadata?.full_name
     );
     setState((s) => ({ ...s, profile }));
-  }, []);
+  }, [safeGetSession]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    let cancelled = false;
+
+    (async () => {
+      const session = await safeGetSession();
       let profile: UserProfile | null = null;
+
       if (session?.user) {
         profile = await fetchProfile(
           session.user.id,
@@ -75,6 +95,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           session.user.user_metadata?.full_name
         );
       }
+
+      if (cancelled) return;
       setState({
         session,
         user: session?.user ?? null,
@@ -82,7 +104,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading: false,
         isAuthenticated: !!session,
       });
-    });
+    })();
 
     const {
       data: { subscription },
@@ -95,6 +117,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           session.user.user_metadata?.full_name
         );
       }
+      if (cancelled) return;
       setState({
         session,
         user: session?.user ?? null,
@@ -104,8 +127,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
     });
 
-    return () => subscription.unsubscribe();
-  }, [refreshProfile]);
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, [safeGetSession]);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
     // Validate and rate-limit login attempts before hitting Supabase.

@@ -12,7 +12,16 @@ import { createClient } from '@supabase/supabase-js';
  *   given service-role privileges.
  * - Do not hard-code keys in source; load them from environment only.
  */
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+function sanitizeSupabaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  const unquoted =
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ? trimmed.slice(1, -1).trim()
+      : trimmed;
+  return unquoted.replace(/\/+$/, '');
+}
+
+const supabaseUrl = sanitizeSupabaseUrl(process.env.EXPO_PUBLIC_SUPABASE_URL ?? '');
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
 if (!supabaseUrl || !supabaseAnonKey) {
