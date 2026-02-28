@@ -1,12 +1,18 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import type { Session, User } from '@supabase/supabase-js';
+import { auth } from '@/lib/firebase';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { supabase } from '@/lib/supabase';
-import type { UserProfile, UserRole } from '@/types';
-import { checkRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { validateLoginCredentials } from '@/lib/validation';
+import type { UserProfile, UserRole } from '@/types';
+import {
+  createUserWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  type User,
+} from 'firebase/auth';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 interface AuthState {
-  session: Session | null;
   user: User | null;
   profile: UserProfile | null;
   isLoading: boolean;
@@ -30,11 +36,7 @@ async function fetchProfile(userId: string, fallbackEmail?: string, fallbackName
       .select('id, email, full_name, avatar_url, role, created_at, updated_at')
       .eq('id', userId)
       .single();
-
     if (data) return data as UserProfile;
-    if (error) return null;
-
-    // No profiles table or row yet: use a synthetic profile so role defaults to student
     if (fallbackEmail)
       return {
         id: userId,
@@ -50,161 +52,76 @@ async function fetchProfile(userId: string, fallbackEmail?: string, fallbackName
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
-    session: null,
     user: null,
     profile: null,
     isLoading: true,
     isAuthenticated: false,
   });
 
-  const safeGetSession = useCallback(async (): Promise<Session | null> => {
-    try {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) return null;
-      return data.session ?? null;
-    } catch {
-      return null;
-    }
-  }, []);
-
   const refreshProfile = useCallback(async () => {
-    const session = await safeGetSession();
-    if (!session?.user) {
+    const user = auth.currentUser;
+    if (!user) {
       setState((s) => ({ ...s, profile: null }));
       return;
     }
-    const profile = await fetchProfile(
-      session.user.id,
-      session.user.email ?? undefined,
-      session.user.user_metadata?.full_name
-    );
+    const profile = await fetchProfile(user.uid, user.email ?? undefined, user.displayName ?? undefined);
     setState((s) => ({ ...s, profile }));
-  }, [safeGetSession]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      const session = await safeGetSession();
-      let profile: UserProfile | null = null;
-
-      if (session?.user) {
-        profile = await fetchProfile(
-          session.user.id,
-          session.user.email ?? undefined,
-          session.user.user_metadata?.full_name
-        );
-      }
-
-      if (cancelled) return;
-      setState({
-        session,
-        user: session?.user ?? null,
-        profile,
-        isLoading: false,
-        isAuthenticated: !!session,
-      });
-    })();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      let profile: UserProfile | null = null;
-      if (session?.user) {
-        profile = await fetchProfile(
-          session.user.id,
-          session.user.email ?? undefined,
-          session.user.user_metadata?.full_name
-        );
-      }
-      if (cancelled) return;
-      setState({
-        session,
-        user: session?.user ?? null,
-        profile,
-        isLoading: false,
-        isAuthenticated: !!session,
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      subscription.unsubscribe();
-    };
-  }, [safeGetSession]);
-
-  const signInWithEmail = useCallback(async (email: string, password: string) => {
-    // Validate and rate-limit login attempts before hitting Supabase.
-    const validation = validateLoginCredentials({ email, password });
-    if (!validation.ok) {
-      return { error: new Error(validation.errors[0]) };
-    }
-
-    try {
-      checkRateLimit({
-        key: `auth:login:${email.toLowerCase() || 'anonymous'}`,
-      });
-    } catch (err) {
-      return { error: err as Error };
-    }
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-
-    // Surface rate limit style errors with a clear message if the backend
-    // is enforcing 429s as well.
-    const anyError = error as unknown as { message?: string; status?: number } | null;
-    if (anyError && anyError.status === 429) {
-      return { error: new RateLimitError() };
-    }
-
-    return { error: error as Error | null };
   }, []);
 
-  const signUpWithEmail = useCallback(
-    async (email: string, password: string, fullName?: string) => {
-      // Reuse the same credential constraints for signup.
-      const validation = validateLoginCredentials({ email, password });
-      if (!validation.ok) {
-        return { error: new Error(validation.errors[0]) };
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      let profile: UserProfile | null = null;
+      if (user) {
+        profile = await fetchProfile(user.uid, user.email ?? undefined, user.displayName ?? undefined);
       }
-
-      try {
-        checkRateLimit({
-          key: `auth:signup:${email.toLowerCase() || 'anonymous'}`,
-        });
-      } catch (err) {
-        return { error: err as Error };
-      }
-
-      const { error } = await supabase.auth.signUp({
-        email: email.trim(),
-        password,
-        options: fullName ? { data: { full_name: fullName } } : undefined,
+      setState({
+        user,
+        profile,
+        isLoading: false,
+        isAuthenticated: !!user,
       });
-      return { error: error as Error | null };
-    },
-    []
-  );
+    });
+    return unsubscribe;
+  }, []);
 
-  const signInWithGoogle = useCallback(async () => {
-    // Rate-limit OAuth attempts as well, using a coarse anonymous key.
+  const signInWithEmail = useCallback(async (email: string, password: string) => {
+    const validation = validateLoginCredentials({ email, password });
+    if (!validation.ok) return { error: new Error(validation.errors[0]) };
     try {
-      checkRateLimit({ key: 'auth:google', limit: 20 });
+      checkRateLimit({ key: `auth:login:${email.toLowerCase()}` });
     } catch (err) {
       return { error: err as Error };
     }
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      return { error: null };
+    } catch (err) {
+      return { error: err as Error };
+    }
+  }, []);
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-    });
-    return { error: error as Error | null };
+  const signUpWithEmail = useCallback(async (email: string, password: string, fullName?: string) => {
+    const validation = validateLoginCredentials({ email, password });
+    if (!validation.ok) return { error: new Error(validation.errors[0]) };
+    try {
+      checkRateLimit({ key: `auth:signup:${email.toLowerCase()}` });
+    } catch (err) {
+      return { error: err as Error };
+    }
+    try {
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+      return { error: null };
+    } catch (err) {
+      return { error: err as Error };
+    }
+  }, []);
+
+  const signInWithGoogle = useCallback(async () => {
+    return { error: new Error('Google sign-in not supported yet') };
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    await firebaseSignOut(auth);
   }, []);
 
   const value: AuthContextValue = {

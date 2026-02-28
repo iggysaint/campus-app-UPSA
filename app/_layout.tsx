@@ -1,7 +1,8 @@
+import { AuthProvider } from '@/lib/auth-context';
+import 'cross-fetch/polyfill';
+import { Stack } from 'expo-router';
 import 'react-native-url-polyfill/auto';
 import '../global.css';
-import { Stack } from 'expo-router';
-import { AuthProvider } from '@/lib/auth-context';
 
 export default function RootLayout() {
   return (

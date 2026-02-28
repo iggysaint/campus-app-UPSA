@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { useAuth } from '@/lib/auth-context';
+import { db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/lib/auth-context';
+import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 
 type Announcement = {
   id: string;
@@ -11,6 +12,12 @@ type Announcement = {
   body: string | null;
   created_at: string | null;
 };
+
+interface FirestoreAnnouncement {
+  title?: string;
+  body?: string;
+  created_at?: any;
+}
 
 function getDayGreeting(date = new Date()): 'morning' | 'afternoon' | 'evening' {
   const hour = date.getHours();
@@ -67,18 +74,22 @@ export default function HomeScreen() {
     (async () => {
       try {
         setLoadingAnnouncements(true);
-        const { data, error } = await supabase
-          .from('announcements')
-          .select('id, title, body, created_at')
-          .order('created_at', { ascending: false })
-          .limit(3);
+        const q = query(collection(db, 'announcements'), orderBy('created_at', 'desc'), limit(3));
+        const querySnapshot = await getDocs(q);
+        
+        const data: Announcement[] = [];
+        querySnapshot.forEach((doc) => {
+          const docData = doc.data() as FirestoreAnnouncement;
+          data.push({
+            id: doc.id,
+            title: docData.title || null,
+            body: docData.body || null,
+            created_at: docData.created_at?.toDate?.()?.toISOString() || null,
+          });
+        });
 
         if (cancelled) return;
-        if (error || !data) {
-          setAnnouncements([]);
-          return;
-        }
-        setAnnouncements(data as Announcement[]);
+        setAnnouncements(data);
       } catch {
         if (!cancelled) setAnnouncements([]);
       } finally {
