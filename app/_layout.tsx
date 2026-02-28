@@ -1,3 +1,4 @@
+import 'react-native-url-polyfill/auto';
 import '../global.css';
 import { Stack } from 'expo-router';
 import { AuthProvider } from '@/lib/auth-context';
