@@ -1,13 +1,18 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import type { Session, User } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
-import type { UserProfile, UserRole } from '@/types';
+import { auth } from '@/lib/firebase';
 import { checkRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { validateLoginCredentials } from '@/lib/validation';
+import type { UserProfile, UserRole } from '@/types';
+import {
+  createUserWithEmailAndPassword,
+  signOut as firebaseSignOut,
+  User as FirebaseUser,
+  onAuthStateChanged,
+  signInWithEmailAndPassword
+} from 'firebase/auth';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 interface AuthState {
-  session: Session | null;
-  user: User | null;
+  user: FirebaseUser | null;
   profile: UserProfile | null;
   isLoading: boolean;
   isAuthenticated: boolean;
@@ -25,23 +30,16 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 async function fetchProfile(userId: string, fallbackEmail?: string, fallbackName?: string): Promise<UserProfile | null> {
   try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, email, full_name, avatar_url, role, created_at, updated_at')
-      .eq('id', userId)
-      .single();
-
-    if (data) return data as UserProfile;
-    if (error) return null;
-
-    // No profiles table or row yet: use a synthetic profile so role defaults to student
-    if (fallbackEmail)
+    // For now, return a synthetic profile since we don't have a profiles table in Firebase
+    // This can be extended later to use Firestore
+    if (fallbackEmail) {
       return {
         id: userId,
         email: fallbackEmail,
         full_name: fallbackName ?? undefined,
         role: 'student',
       };
+    }
     return null;
   } catch {
     return null;
@@ -50,91 +48,58 @@ async function fetchProfile(userId: string, fallbackEmail?: string, fallbackName
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
-    session: null,
     user: null,
     profile: null,
     isLoading: true,
     isAuthenticated: false,
   });
 
-  const safeGetSession = useCallback(async (): Promise<Session | null> => {
-    try {
-      const { data, error } = await supabase.auth.getSession();
-      if (error) return null;
-      return data.session ?? null;
-    } catch {
-      return null;
-    }
-  }, []);
-
   const refreshProfile = useCallback(async () => {
-    const session = await safeGetSession();
-    if (!session?.user) {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
       setState((s) => ({ ...s, profile: null }));
       return;
     }
     const profile = await fetchProfile(
-      session.user.id,
-      session.user.email ?? undefined,
-      session.user.user_metadata?.full_name
+      currentUser.uid,
+      currentUser.email ?? undefined,
+      currentUser.displayName ?? undefined
     );
     setState((s) => ({ ...s, profile }));
-  }, [safeGetSession]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      const session = await safeGetSession();
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       let profile: UserProfile | null = null;
 
-      if (session?.user) {
+      if (user) {
         profile = await fetchProfile(
-          session.user.id,
-          session.user.email ?? undefined,
-          session.user.user_metadata?.full_name
+          user.uid,
+          user.email ?? undefined,
+          user.displayName ?? undefined
         );
       }
 
-      if (cancelled) return;
-      setState({
-        session,
-        user: session?.user ?? null,
-        profile,
-        isLoading: false,
-        isAuthenticated: !!session,
-      });
-    })();
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      let profile: UserProfile | null = null;
-      if (session?.user) {
-        profile = await fetchProfile(
-          session.user.id,
-          session.user.email ?? undefined,
-          session.user.user_metadata?.full_name
-        );
+      if (!cancelled) {
+        setState({
+          user,
+          profile,
+          isLoading: false,
+          isAuthenticated: !!user,
+        });
       }
-      if (cancelled) return;
-      setState({
-        session,
-        user: session?.user ?? null,
-        profile,
-        isLoading: false,
-        isAuthenticated: !!session,
-      });
     });
 
     return () => {
       cancelled = true;
-      subscription.unsubscribe();
+      unsubscribe();
     };
-  }, [safeGetSession]);
+  }, []);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
-    // Validate and rate-limit login attempts before hitting Supabase.
+    // Validate and rate-limit login attempts before hitting Firebase.
     const validation = validateLoginCredentials({ email, password });
     if (!validation.ok) {
       return { error: new Error(validation.errors[0]) };
@@ -148,19 +113,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { error: err as Error };
     }
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-
-    // Surface rate limit style errors with a clear message if the backend
-    // is enforcing 429s as well.
-    const anyError = error as unknown as { message?: string; status?: number } | null;
-    if (anyError && anyError.status === 429) {
-      return { error: new RateLimitError() };
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      return { error: null };
+    } catch (error: any) {
+      // Handle Firebase auth errors
+      if (error.code === 'auth/too-many-requests') {
+        return { error: new RateLimitError() };
+      }
+      return { error: error as Error };
     }
-
-    return { error: error as Error | null };
   }, []);
 
   const signUpWithEmail = useCallback(
@@ -179,12 +141,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { error: err as Error };
       }
 
-      const { error } = await supabase.auth.signUp({
-        email: email.trim(),
-        password,
-        options: fullName ? { data: { full_name: fullName } } : undefined,
-      });
-      return { error: error as Error | null };
+      try {
+        await createUserWithEmailAndPassword(auth, email.trim(), password);
+        // Note: Firebase doesn't support setting displayName during signup
+        // This would need to be handled separately after signup
+        return { error: null };
+      } catch (error: any) {
+        return { error: error as Error };
+      }
     },
     []
   );
@@ -197,14 +161,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { error: err as Error };
     }
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-    });
-    return { error: error as Error | null };
+    // Google sign-in would need additional Firebase configuration
+    // For now, return an error indicating it's not implemented
+    return { error: new Error('Google sign-in not yet implemented') };
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    await firebaseSignOut(auth);
   }, []);
 
   const value: AuthContextValue = {

@@ -1,24 +1,26 @@
+import { COLORS, RADIUS, SPACING } from '@/constants/theme';
+import { useAuth } from '@/lib/auth-context';
+import { auth, db } from '@/lib/firebase';
+import { RateLimitError } from '@/lib/rate-limit';
+import { validateLoginCredentials } from '@/lib/validation';
+import { useRouter } from 'expo-router';
+import { signOut } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import { useState } from 'react';
 import {
-  View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  ActivityIndicator,
+  View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
-import { useAuth } from '@/lib/auth-context';
-import { Card } from '@/components/ui/Card';
-import { COLORS, SPACING, RADIUS } from '@/constants/theme';
-import { validateLoginCredentials } from '@/lib/validation';
-import { RateLimitError } from '@/lib/rate-limit';
 
 export default function LoginScreen() {
-  const { signInWithEmail, signInWithGoogle } = useAuth();
+  const { signInWithEmail } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -42,18 +44,39 @@ export default function LoginScreen() {
       }
       return;
     }
-    router.replace('/(tabs)');
-  };
 
-  const handleGoogleLogin = async () => {
-    setLoading(true);
-    const { error } = await signInWithGoogle();
-    setLoading(false);
-    if (error) {
-      Alert.alert('Google sign-in failed', error.message);
-      return;
+    // Check email verification
+    if (!auth.currentUser?.emailVerified && auth.currentUser) {
+      try {
+        // Check user role in Firestore
+        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+        if (userDoc.exists()) {
+          const userRole = userDoc.data().role;
+          
+          if (userRole === 'admin') {
+            // Allow admin users with unverified email
+            router.replace('/(tabs)');
+            return;
+          } else {
+            // Block students with unverified email
+            await signOut(auth);
+            Alert.alert('Email not verified', 'Please verify your email before logging in. Check your inbox and spam folder.');
+            return;
+          }
+        } else {
+          // User document doesn't exist, block login
+          await signOut(auth);
+          Alert.alert('Email not verified', 'Please verify your email before logging in. Check your inbox and spam folder.');
+          return;
+        }
+      } catch (error) {
+        console.error('Error checking user role:', error);
+        await signOut(auth);
+        Alert.alert('Email not verified', 'Please verify your email before logging in. Check your inbox and spam folder.');
+        return;
+      }
     }
-    // OAuth opens browser; redirect will be handled by onAuthStateChange
+
     router.replace('/(tabs)');
   };
 
@@ -66,7 +89,7 @@ export default function LoginScreen() {
         <Text style={styles.title}>UPSA Campus</Text>
         <Text style={styles.subtitle}>Sign in to continue</Text>
 
-        <Card style={styles.card}>
+        <View style={styles.card}>
           <TextInput
             style={styles.input}
             placeholder="Email"
@@ -89,30 +112,24 @@ export default function LoginScreen() {
             editable={!loading}
           />
           <TouchableOpacity
-            style={[styles.primaryButton, loading && styles.buttonDisabled]}
+            style={[styles.signInButton, loading && styles.buttonDisabled]}
             onPress={handleEmailLogin}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.primaryButtonText}>Sign in</Text>
+              <Text style={styles.signInButtonText}>Sign In</Text>
             )}
           </TouchableOpacity>
-        </Card>
-
-        <View style={styles.divider}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or</Text>
-          <View style={styles.dividerLine} />
         </View>
 
         <TouchableOpacity
-          style={[styles.googleButton, loading && styles.buttonDisabled]}
-          onPress={handleGoogleLogin}
+          style={styles.createAccountLink}
+          onPress={() => router.push('/register')}
           disabled={loading}
         >
-          <Text style={styles.googleButtonText}>Continue with Google</Text>
+          <Text style={styles.createAccountText}>Create New Account</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -141,7 +158,12 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xl,
   },
   card: {
+    backgroundColor: COLORS.surface,
+    borderRadius: RADIUS.md,
+    padding: SPACING.lg,
     marginBottom: SPACING.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   input: {
     height: 48,
@@ -152,15 +174,16 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
     fontSize: 16,
     color: COLORS.text,
+    backgroundColor: COLORS.background,
   },
-  primaryButton: {
+  signInButton: {
     height: 48,
     backgroundColor: COLORS.primary,
     borderRadius: RADIUS.sm,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  primaryButtonText: {
+  signInButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
@@ -168,32 +191,12 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.7,
   },
-  divider: {
-    flexDirection: 'row',
+  createAccountLink: {
     alignItems: 'center',
-    marginVertical: SPACING.lg,
+    marginTop: SPACING.lg,
   },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: COLORS.border,
-  },
-  dividerText: {
-    marginHorizontal: SPACING.md,
-    color: COLORS.textSecondary,
-    fontSize: 14,
-  },
-  googleButton: {
-    height: 48,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.sm,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  googleButtonText: {
-    color: COLORS.text,
+  createAccountText: {
+    color: COLORS.primary,
     fontSize: 16,
     fontWeight: '500',
   },

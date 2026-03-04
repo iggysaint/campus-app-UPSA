@@ -1,8 +1,8 @@
-import { useEffect } from 'react';
-import { Tabs, useRouter } from 'expo-router';
-import { useAuth, useUserRole } from '@/lib/auth-context';
 import { COLORS } from '@/constants/theme';
+import { useAuth, useUserRole } from '@/lib/auth-context';
 import { Ionicons } from '@expo/vector-icons';
+import { Tabs, useRouter } from 'expo-router';
+import { useEffect } from 'react';
 
 export default function TabsLayout() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -24,6 +24,9 @@ export default function TabsLayout() {
         headerTintColor: '#fff',
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: COLORS.textSecondary,
+        tabBarStyle: {
+          justifyContent: 'space-between',
+        },
       }}
     >
       <Tabs.Screen
@@ -73,10 +76,24 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="polls"
+        options={{
+          title: 'Polls',
+          tabBarButton: () => null,
+        }}
+      />
+      <Tabs.Screen
+        name="hostel"
+        options={{
+          title: 'Hostel',
+          tabBarButton: () => null,
+        }}
+      />
+      <Tabs.Screen
         name="admin"
         options={{
           title: 'Admin',
-          href: isAdmin ? '/(tabs)/admin' : null,
+          tabBarButton: () => null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="shield-checkmark" size={size} color={color} />
           ),
