@@ -1,9 +1,15 @@
 import { COLORS, RADIUS, SPACING } from '@/constants/theme';
-import { db } from '@/lib/firebase';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { collection, doc, getDocs, updateDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
+import { addDoc, collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+interface Vote {
+  poll_id: string;
+  user_id: string;
+  option_index: number;
+  voted_at: any;
+}
 
 interface Poll {
   id: string;
@@ -20,12 +26,20 @@ const { width: screenWidth } = Dimensions.get('window');
 export default function PollsScreen() {
   const [polls, setPolls] = useState<Poll[]>([]);
   const [loading, setLoading] = useState(true);
-  const [votedPolls, setVotedPolls] = useState<Set<string>>(new Set());
+  const [userVotes, setUserVotes] = useState<Set<string>>(new Set());
   const [votingPollId, setVotingPollId] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
     fetchPolls();
-    loadVotedPolls();
+    loadUserVotes();
+    
+    // Update current time every minute
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 60000); // 60 seconds
+    
+    return () => clearInterval(interval);
   }, []);
 
   const fetchPolls = async () => {
@@ -33,7 +47,12 @@ export default function PollsScreen() {
       const querySnapshot = await getDocs(collection(db, 'polls'));
       const pollsData: Poll[] = [];
       querySnapshot.forEach((doc) => {
-        pollsData.push({ id: doc.id, ...doc.data() } as Poll);
+        const pollData = { id: doc.id, ...doc.data() } as Poll;
+        // Ensure vote_counts is always an array
+        if (!pollData.vote_counts || !Array.isArray(pollData.vote_counts)) {
+          pollData.vote_counts = new Array(pollData.options?.length || 0).fill(0);
+        }
+        pollsData.push(pollData);
       });
       // Sort by start_date descending
       pollsData.sort((a, b) => b.start_date?.toDate() - a.start_date?.toDate());
@@ -45,29 +64,50 @@ export default function PollsScreen() {
     }
   };
 
-  const loadVotedPolls = async () => {
+  const loadUserVotes = async () => {
     try {
-      const voted = await AsyncStorage.getItem('voted_polls');
-      if (voted) {
-        setVotedPolls(new Set(JSON.parse(voted)));
-      }
+      if (!auth.currentUser) return;
+      
+      const votesQuery = query(
+        collection(db, 'votes'),
+        where('user_id', '==', auth.currentUser.uid)
+      );
+      const querySnapshot = await getDocs(votesQuery);
+      const votedPollIds = new Set<string>();
+      
+      querySnapshot.forEach((doc) => {
+        const voteData = doc.data() as Vote;
+        votedPollIds.add(voteData.poll_id);
+      });
+      
+      setUserVotes(votedPollIds);
     } catch (error) {
-      console.error('Error loading voted polls:', error);
+      console.error('Error loading user votes:', error);
     }
   };
 
-  const saveVotedPoll = async (pollId: string) => {
+  const saveUserVote = async (pollId: string, optionIndex: number) => {
     try {
-      const newVotedPolls = new Set(votedPolls).add(pollId);
-      setVotedPolls(newVotedPolls);
-      await AsyncStorage.setItem('voted_polls', JSON.stringify(Array.from(newVotedPolls)));
+      if (!auth.currentUser) return;
+      
+      // Add vote document to Firestore
+      await addDoc(collection(db, 'votes'), {
+        poll_id: pollId,
+        user_id: auth.currentUser.uid,
+        option_index: optionIndex,
+        voted_at: serverTimestamp()
+      });
+      
+      // Update local state
+      const newUserVotes = new Set(userVotes).add(pollId);
+      setUserVotes(newUserVotes);
     } catch (error) {
-      console.error('Error saving voted poll:', error);
+      console.error('Error saving user vote:', error);
     }
   };
 
   const handleVote = async (pollId: string, optionIndex: number) => {
-    if (votedPolls.has(pollId) || votingPollId) return;
+    if (userVotes.has(pollId) || votingPollId || !auth.currentUser) return;
 
     setVotingPollId(pollId);
     try {
@@ -75,9 +115,12 @@ export default function PollsScreen() {
       const poll = polls.find(p => p.id === pollId);
       
       if (poll) {
-        const newVoteCounts = [...poll.vote_counts];
+        // Ensure vote_counts is a valid array
+        const currentVoteCounts = poll.vote_counts || new Array(poll.options?.length || 0).fill(0);
+        const newVoteCounts = [...currentVoteCounts];
         newVoteCounts[optionIndex] = (newVoteCounts[optionIndex] || 0) + 1;
         
+        // Update the poll document's vote_counts array
         await updateDoc(pollRef, {
           vote_counts: newVoteCounts
         });
@@ -89,7 +132,8 @@ export default function PollsScreen() {
             : p
         ));
 
-        await saveVotedPoll(pollId);
+        // Save the vote to votes collection
+        await saveUserVote(pollId, optionIndex);
       }
     } catch (error) {
       console.error('Error voting:', error);
@@ -99,17 +143,17 @@ export default function PollsScreen() {
   };
 
   const getPollStatus = (poll: Poll) => {
-    const now = new Date();
+    const now = currentTime;
     const startDate = poll.start_date?.toDate();
     const endDate = poll.end_date?.toDate();
     
     // Don't show if current date is before start_date
-    if (now < startDate) {
+    if (startDate && now < startDate) {
       return 'upcoming';
     }
     
     // If current date is past end_date, treat as ended regardless of is_active
-    if (now > endDate) {
+    if (endDate && now > endDate) {
       return 'ended';
     }
     
@@ -117,8 +161,12 @@ export default function PollsScreen() {
     return poll.is_active ? 'active' : 'ended';
   };
 
-  const getWinningOptions = (voteCounts: number[]) => {
+  const getWinningOptions = (voteCounts: number[] | undefined | null) => {
+    if (!voteCounts || !Array.isArray(voteCounts) || voteCounts.length === 0) {
+      return [];
+    }
     const maxVotes = Math.max(...voteCounts);
+    if (maxVotes === 0) return []; // No votes yet
     return voteCounts.map((count, index) => count === maxVotes ? index : -1).filter(index => index !== -1);
   };
 
@@ -161,9 +209,11 @@ export default function PollsScreen() {
         ) : (
           polls.filter(poll => getPollStatus(poll) !== 'upcoming').map((poll) => {
             const status = getPollStatus(poll);
-            const hasVoted = votedPolls.has(poll.id);
-            const totalVotes = poll.vote_counts.reduce((sum, count) => sum + (count || 0), 0);
-            const winningOptions = getWinningOptions(poll.vote_counts);
+            const hasVoted = userVotes.has(poll.id);
+            // Ensure vote_counts is always a valid array
+            const voteCounts = poll.vote_counts || new Array(poll.options?.length || 0).fill(0);
+            const totalVotes = voteCounts.reduce((sum, count) => sum + (count || 0), 0);
+            const winningOptions = getWinningOptions(voteCounts);
             
             return (
               <View key={poll.id} style={styles.pollCard}>
@@ -184,7 +234,9 @@ export default function PollsScreen() {
                 
                 <View style={styles.optionsContainer}>
                   {poll.options.map((option, index) => {
-                    const votes = poll.vote_counts[index] || 0;
+                    // Ensure vote_counts is always a valid array
+                    const voteCounts = poll.vote_counts || new Array(poll.options?.length || 0).fill(0);
+                    const votes = voteCounts[index] || 0;
                     const percentage = getPercentage(votes, totalVotes);
                     const isWinner = winningOptions.includes(index);
                     

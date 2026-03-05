@@ -1,5 +1,6 @@
 import { COLORS, RADIUS, SPACING } from '@/constants/theme';
 import { auth, db } from '@/lib/firebase';
+import { Ionicons } from '@expo/vector-icons';
 import { addDoc, collection, doc, getDoc, getDocs, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -48,7 +49,10 @@ export default function ClubsScreen() {
       const querySnapshot = await getDocs(collection(db, 'clubs'));
       const clubsData: Club[] = [];
       querySnapshot.forEach((doc) => {
-        clubsData.push({ id: doc.id, ...doc.data() } as Club);
+        const docData = doc.data();
+        if (docData) {
+          clubsData.push({ id: doc.id, ...docData } as Club);
+        }
       });
       setClubs(clubsData);
     } catch (error) {
@@ -63,7 +67,8 @@ export default function ClubsScreen() {
       if (auth.currentUser) {
         const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
         if (userDoc.exists()) {
-          setUserRole(userDoc.data().role);
+          const userData = userDoc.data();
+          setUserRole(userData?.role || null);
         }
       }
     } catch (error) {
@@ -77,14 +82,14 @@ export default function ClubsScreen() {
     }
   };
 
-  const openEditModal = (club?: Club) => {
+  const openEditModal = (club?: Club | null) => {
     if (club) {
       setEditingClub(club);
       setEditForm({
-        name: club.name,
-        description: club.description,
-        category: club.category,
-        whatsapp_link: club.whatsapp_link,
+        name: club.name || '',
+        description: club.description || '',
+        category: club.category || '',
+        whatsapp_link: club.whatsapp_link || '',
         image_url: club.image_url || '',
         member_count: club.member_count?.toString() || '',
       });
@@ -147,7 +152,7 @@ export default function ClubsScreen() {
   };
 
   const getCategoryInitial = (category: string) => {
-    return category.charAt(0).toUpperCase();
+    return category?.charAt(0)?.toUpperCase() || '';
   };
 
   if (loading) {
@@ -184,7 +189,7 @@ export default function ClubsScreen() {
             <Text style={styles.emptySubtext}>Check back later for new clubs</Text>
           </View>
         ) : (
-          clubs.map((club) => (
+          clubs.filter(club => club != null).map((club) => (
             <View key={club.id} style={styles.clubCard}>
               {/* Club Image */}
               <View style={styles.imageContainer}>
@@ -192,43 +197,48 @@ export default function ClubsScreen() {
                   <Image source={{ uri: club.image_url }} style={styles.clubImage} />
                 ) : (
                   <View style={styles.placeholderImage}>
-                    <Text style={styles.placeholderText}>{getCategoryInitial(club.category)}</Text>
+                    <Text style={styles.placeholderText}>{getCategoryInitial(club?.category || '')}</Text>
                   </View>
+                )}
+                
+                {/* Admin Edit Icon - Top Right Corner */}
+                {userRole === 'admin' && (
+                  <TouchableOpacity
+                    style={styles.editIconOverlay}
+                    onPress={() => openEditModal(club)}
+                  >
+                    <Ionicons name="pencil" size={16} color="#fff" />
+                  </TouchableOpacity>
                 )}
               </View>
 
-              <View style={styles.clubContent}>
-                <View style={styles.clubHeader}>
-                  <Text style={styles.clubName}>{club.name}</Text>
-                  {userRole === 'admin' && (
-                    <TouchableOpacity
-                      style={styles.editButton}
-                      onPress={() => openEditModal(club)}
-                    >
-                      <Text style={styles.editButtonText}>✏️</Text>
-                    </TouchableOpacity>
-                  )}
+              {/* Content Below Image */}
+              <View style={styles.contentContainer}>
+                {/* Club Name and Category Badge */}
+                <View style={styles.nameRow}>
+                  <Text style={styles.clubName}>{club?.name || ''}</Text>
+                  <View style={styles.categoryBadge}>
+                    <Text style={styles.categoryText}>{club?.category || ''}</Text>
+                  </View>
                 </View>
                 
-                <View style={styles.categoryBadge}>
-                  <Text style={styles.categoryText}>{club.category}</Text>
-                </View>
-                
-                <Text style={styles.clubDescription} numberOfLines={3}>
-                  {club.description}
+                {/* Description */}
+                <Text style={styles.clubDescription} numberOfLines={2}>
+                  {club?.description || ''}
                 </Text>
                 
-                <View style={styles.clubFooter}>
+                {/* Bottom Row: Member Count and Join Button */}
+                <View style={styles.bottomRow}>
                   <View style={styles.memberCount}>
-                    <Text style={styles.memberIcon}>👥</Text>
+                    <Ionicons name="people" size={14} color="#888888" />
                     <Text style={styles.memberText}>
-                      {club.member_count || 0} members
+                      {club?.member_count || 0} members
                     </Text>
                   </View>
                   
                   <TouchableOpacity
                     style={styles.joinButton}
-                    onPress={() => handleJoinClub(club.whatsapp_link)}
+                    onPress={() => handleJoinClub(club?.whatsapp_link || '')}
                   >
                     <Text style={styles.joinButtonText}>Join</Text>
                   </TouchableOpacity>
@@ -390,26 +400,33 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
   },
   clubCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    marginBottom: SPACING.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    overflow: 'hidden',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   imageContainer: {
     width: '100%',
-    height: 120,
+    height: 140,
+    position: 'relative',
   },
   clubImage: {
     width: '100%',
     height: '100%',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
     resizeMode: 'cover',
   },
   placeholderImage: {
     width: '100%',
     height: '100%',
     backgroundColor: '#0088CC',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -418,49 +435,47 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
   },
-  clubContent: {
-    padding: SPACING.lg,
+  editIconOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 12,
+    padding: 6,
   },
-  clubHeader: {
+  contentContainer: {
+    padding: 12,
+  },
+  nameRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: SPACING.sm,
+    alignItems: 'center',
+    marginBottom: 8,
   },
   clubName: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: COLORS.text,
-    flex: 1,
-    marginRight: SPACING.md,
-  },
-  editButton: {
-    padding: SPACING.xs,
-    borderRadius: RADIUS.sm,
-  },
-  editButtonText: {
     fontSize: 16,
+    fontWeight: '600',
+    color: '#111111',
+    flex: 1,
   },
   categoryBadge: {
-    backgroundColor: '#0088CC',
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
-    borderRadius: RADIUS.sm,
-    alignSelf: 'flex-start',
-    marginBottom: SPACING.sm,
+    backgroundColor: '#EAF5FD',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   categoryText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#fff',
+    color: '#0088CC',
   },
   clubDescription: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    lineHeight: 20,
-    marginBottom: SPACING.md,
+    fontSize: 13,
+    color: '#888888',
+    lineHeight: 18,
+    marginBottom: 12,
   },
-  clubFooter: {
+  bottomRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -469,25 +484,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  memberIcon: {
-    fontSize: 16,
-    marginRight: SPACING.xs,
-  },
   memberText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
+    fontSize: 12,
+    color: '#888888',
+    marginLeft: 4,
   },
   joinButton: {
-    backgroundColor: '#0088CC',
-    borderRadius: RADIUS.sm,
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.lg,
+    backgroundColor: '#25D366',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
   joinButtonText: {
-    color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+    color: '#fff',
   },
   fab: {
     position: 'absolute',

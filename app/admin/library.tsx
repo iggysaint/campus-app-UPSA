@@ -3,7 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { Alert, Modal, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 type LibraryFile = {
   id: string;
@@ -272,95 +272,102 @@ export default function AdminLibrary() {
           setFormData({ title: '', description: '', category: 'PDF', file_url: '' });
         }}
       >
-        <View className="flex-1 items-center justify-center bg-black/50">
-          <View className="mx-5 w-full max-w-lg rounded-2xl bg-white p-6">
-            <Text className="mb-6 text-xl font-bold text-slate-900">
-              {editingFile ? 'Edit File' : 'Upload New File'}
-            </Text>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          className="flex-1"
+        >
+          <View className="flex-1 items-center justify-center bg-black/50">
+            <View className="mx-5 w-full max-w-lg rounded-2xl bg-white p-6">
+              <Text className="mb-6 text-xl font-bold text-slate-900">
+                {editingFile ? 'Edit File' : 'Upload New File'}
+              </Text>
 
-            {/* Title */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Title</Text>
-              <TextInput
-                className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
-                value={formData.title}
-                onChangeText={(text) => setFormData({ ...formData, title: text })}
-                placeholder="Enter file title"
-              />
-            </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Title */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Title</Text>
+                  <TextInput
+                    className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.title}
+                    onChangeText={(text) => setFormData({ ...formData, title: text })}
+                    placeholder="Enter file title"
+                  />
+                </View>
 
-            {/* Description */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Description</Text>
-              <TextInput
-                className="w-full h-24 rounded-lg border border-gray-300 p-3 text-slate-900"
-                value={formData.description}
-                onChangeText={(text) => setFormData({ ...formData, description: text })}
-                placeholder="Enter file description"
-                multiline
-                textAlignVertical="top"
-              />
-            </View>
+                {/* Description */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Description</Text>
+                  <TextInput
+                    className="w-full h-24 rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.description}
+                    onChangeText={(text) => setFormData({ ...formData, description: text })}
+                    placeholder="Enter file description"
+                    multiline
+                    textAlignVertical="top"
+                  />
+                </View>
 
-            {/* Category */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Category</Text>
-              <View className="flex-row flex-wrap gap-2">
-                {categories.map((cat) => (
+                {/* Category */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Category</Text>
+                  <View className="flex-row flex-wrap gap-2">
+                    {categories.map((cat) => (
+                      <TouchableOpacity
+                        key={cat.value}
+                        onPress={() => setFormData({ ...formData, category: cat.value })}
+                        className={`px-3 py-2 rounded-lg border ${
+                          formData.category === cat.value
+                            ? 'bg-primary border-primary'
+                            : 'bg-gray-100 border-gray-300'
+                        }`}
+                      >
+                        <Text className={`text-sm font-medium ${
+                          formData.category === cat.value ? 'text-white' : 'text-slate-700'
+                        }`}>
+                          {cat.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                {/* File URL */}
+                <View className="mb-6">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">File URL (Optional)</Text>
+                  <TextInput
+                    className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.file_url}
+                    onChangeText={(text) => setFormData({ ...formData, file_url: text })}
+                    placeholder="Enter file URL (optional)"
+                  />
+                </View>
+
+                {/* Action Buttons */}
+                <View className="flex-row gap-3">
                   <TouchableOpacity
-                    key={cat.value}
-                    onPress={() => setFormData({ ...formData, category: cat.value })}
-                    className={`px-3 py-2 rounded-lg border ${
-                      formData.category === cat.value
-                        ? 'bg-primary border-primary'
-                        : 'bg-gray-100 border-gray-300'
-                    }`}
+                    className="flex-1 rounded-lg bg-gray-200 p-3"
+                    onPress={() => {
+                      setModalVisible(false);
+                      setEditingFile(null);
+                      setFormData({ title: '', description: '', category: 'PDF', file_url: '' });
+                    }}
                   >
-                    <Text className={`text-sm font-medium ${
-                      formData.category === cat.value ? 'text-white' : 'text-slate-700'
-                    }`}>
-                      {cat.label}
+                    <Text className="text-center font-medium text-slate-700">Cancel</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    className="flex-1 rounded-lg bg-primary p-3"
+                    onPress={handleSave}
+                  >
+                    <Text className="text-center font-medium text-white">
+                      {editingFile ? 'Update' : 'Upload'}
                     </Text>
                   </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            {/* File URL */}
-            <View className="mb-6">
-              <Text className="mb-2 text-sm font-medium text-slate-700">File URL (Optional)</Text>
-              <TextInput
-                className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
-                value={formData.file_url}
-                onChangeText={(text) => setFormData({ ...formData, file_url: text })}
-                placeholder="Enter file URL (optional)"
-              />
-            </View>
-
-            {/* Action Buttons */}
-            <View className="flex-row gap-3">
-              <TouchableOpacity
-                className="flex-1 rounded-lg bg-gray-200 p-3"
-                onPress={() => {
-                  setModalVisible(false);
-                  setEditingFile(null);
-                  setFormData({ title: '', description: '', category: 'PDF', file_url: '' });
-                }}
-              >
-                <Text className="text-center font-medium text-slate-700">Cancel</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                className="flex-1 rounded-lg bg-primary p-3"
-                onPress={handleSave}
-              >
-                <Text className="text-center font-medium text-white">
-                  {editingFile ? 'Update' : 'Upload'}
-                </Text>
-              </TouchableOpacity>
+                </View>
+              </ScrollView>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

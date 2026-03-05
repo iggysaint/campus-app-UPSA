@@ -2,8 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { Alert, Modal, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { db } from '../../lib/firebase';
+import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { auth, db } from '@/lib/firebase';
 
 type Announcement = {
   id: string;
@@ -262,108 +262,115 @@ export default function AdminAnnouncements() {
           setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
         }}
       >
-        <View className="flex-1 items-center justify-center bg-black/50">
-          <View className="mx-5 w-full max-w-lg rounded-2xl bg-white p-6">
-            <Text className="mb-6 text-xl font-bold text-slate-900">
-              {editingAnnouncement ? 'Edit Announcement' : 'Create New Announcement'}
-            </Text>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          className="flex-1"
+        >
+          <View className="flex-1 items-center justify-center bg-black/50">
+            <View className="mx-5 w-full max-w-lg rounded-2xl bg-white p-6">
+              <Text className="mb-6 text-xl font-bold text-slate-900">
+                {editingAnnouncement ? 'Edit Announcement' : 'Create New Announcement'}
+              </Text>
 
-            {/* Title */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Title</Text>
-              <TextInput
-                className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
-                value={formData.title}
-                onChangeText={(text) => setFormData({ ...formData, title: text })}
-                placeholder="Enter announcement title"
-              />
-            </View>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Title */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Title</Text>
+                  <TextInput
+                    className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.title}
+                    onChangeText={(text) => setFormData({ ...formData, title: text })}
+                    placeholder="Enter announcement title"
+                  />
+                </View>
 
-            {/* Body */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Message</Text>
-              <TextInput
-                className="w-full h-32 rounded-lg border border-gray-300 p-3 text-slate-900"
-                value={formData.body}
-                onChangeText={(text) => setFormData({ ...formData, body: text })}
-                placeholder="Enter announcement message"
-                multiline
-                textAlignVertical="top"
-              />
-            </View>
+                {/* Body */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Message</Text>
+                  <TextInput
+                    className="w-full h-32 rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.body}
+                    onChangeText={(text) => setFormData({ ...formData, body: text })}
+                    placeholder="Enter announcement message"
+                    multiline
+                    textAlignVertical="top"
+                  />
+                </View>
 
-            {/* Category */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Category</Text>
-              <View className="flex-row flex-wrap gap-2">
-                {categories.map((cat) => (
+                {/* Category */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Category</Text>
+                  <View className="flex-row flex-wrap gap-2">
+                    {categories.map((cat) => (
+                      <TouchableOpacity
+                        key={cat.value}
+                        onPress={() => setFormData({ ...formData, category: cat.value })}
+                        className={`px-3 py-2 rounded-lg border ${
+                          formData.category === cat.value
+                            ? 'bg-primary border-primary'
+                            : 'bg-gray-100 border-gray-300'
+                        }`}
+                      >
+                        <Text className={`text-sm font-medium ${
+                          formData.category === cat.value ? 'text-white' : 'text-slate-700'
+                        }`}>
+                          {cat.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                {/* Target Audience */}
+                <View className="mb-6">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Target Audience</Text>
+                  <View className="flex-row flex-wrap gap-2">
+                    {audiences.map((aud) => (
+                      <TouchableOpacity
+                        key={aud.value}
+                        onPress={() => setFormData({ ...formData, target_audience: aud.value })}
+                        className={`px-3 py-2 rounded-lg border ${
+                          formData.target_audience === aud.value
+                            ? 'bg-primary border-primary'
+                            : 'bg-gray-100 border-gray-300'
+                        }`}
+                      >
+                        <Text className={`text-sm font-medium ${
+                          formData.target_audience === aud.value ? 'text-white' : 'text-slate-700'
+                        }`}>
+                          {aud.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                {/* Action Buttons */}
+                <View className="flex-row gap-3">
                   <TouchableOpacity
-                    key={cat.value}
-                    onPress={() => setFormData({ ...formData, category: cat.value })}
-                    className={`px-3 py-2 rounded-lg border ${
-                      formData.category === cat.value
-                        ? 'bg-primary border-primary'
-                        : 'bg-gray-100 border-gray-300'
-                    }`}
+                    className="flex-1 rounded-lg bg-gray-200 p-3"
+                    onPress={() => {
+                      setModalVisible(false);
+                      setEditingAnnouncement(null);
+                      setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
+                    }}
                   >
-                    <Text className={`text-sm font-medium ${
-                      formData.category === cat.value ? 'text-white' : 'text-slate-700'
-                    }`}>
-                      {cat.label}
+                    <Text className="text-center font-medium text-slate-700">Cancel</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    className="flex-1 rounded-lg bg-primary p-3"
+                    onPress={handleSave}
+                  >
+                    <Text className="text-center font-medium text-white">
+                      {editingAnnouncement ? 'Update' : 'Create'}
                     </Text>
                   </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            {/* Target Audience */}
-            <View className="mb-6">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Target Audience</Text>
-              <View className="flex-row flex-wrap gap-2">
-                {audiences.map((aud) => (
-                  <TouchableOpacity
-                    key={aud.value}
-                    onPress={() => setFormData({ ...formData, target_audience: aud.value })}
-                    className={`px-3 py-2 rounded-lg border ${
-                      formData.target_audience === aud.value
-                        ? 'bg-primary border-primary'
-                        : 'bg-gray-100 border-gray-300'
-                    }`}
-                  >
-                    <Text className={`text-sm font-medium ${
-                      formData.target_audience === aud.value ? 'text-white' : 'text-slate-700'
-                    }`}>
-                      {aud.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            {/* Action Buttons */}
-            <View className="flex-row gap-3">
-              <TouchableOpacity
-                className="flex-1 rounded-lg bg-gray-200 p-3"
-                onPress={() => {
-                  setModalVisible(false);
-                  setEditingAnnouncement(null);
-                  setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
-                }}
-              >
-                <Text className="text-center font-medium text-slate-700">Cancel</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                className="flex-1 rounded-lg bg-primary p-3"
-                onPress={handleSave}
-              >
-                <Text className="text-center font-medium text-white">
-                  {editingAnnouncement ? 'Update' : 'Create'}
-                </Text>
-              </TouchableOpacity>
+                </View>
+              </ScrollView>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

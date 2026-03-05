@@ -1,9 +1,9 @@
 import { db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { Alert, Modal, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 type Poll = {
   id: string;
@@ -11,7 +11,16 @@ type Poll = {
   options: string[];
   votes: number[];
   is_active: boolean;
+  start_date: any;
+  end_date: any;
   created_at: any;
+};
+
+type Vote = {
+  poll_id: string;
+  user_id: string;
+  option_index: number;
+  voted_at: any;
 };
 
 export default function AdminPolls() {
@@ -22,26 +31,59 @@ export default function AdminPolls() {
   const [editingPoll, setEditingPoll] = useState<Poll | null>(null);
   const [formData, setFormData] = useState({
     question: '',
-    options: ['', '']
+    options: ['', ''],
+    start_date: '',
+    end_date: ''
   });
 
   useEffect(() => {
     const fetchPolls = async () => {
       try {
-        const querySnapshot = await getDocs(collection(db, 'polls'));
-        const data: Poll[] = [];
-        querySnapshot.forEach((doc) => {
+        // Fetch polls
+        const pollsQuery = await getDocs(collection(db, 'polls'));
+        const pollsData: Poll[] = [];
+        
+        pollsQuery.forEach((doc) => {
           const docData = doc.data();
-          data.push({
+          pollsData.push({
             id: doc.id,
             question: docData.question || '',
             options: docData.options || [],
-            votes: docData.votes || [],
+            votes: [], // Will be populated from votes collection
             is_active: docData.is_active !== false,
+            start_date: docData.start_date,
+            end_date: docData.end_date,
             created_at: docData.created_at
           });
         });
-        setPolls(data.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
+
+        // Fetch votes for each poll
+        const votesQuery = await getDocs(collection(db, 'votes'));
+        const votesByPoll: { [key: string]: Vote[] } = {};
+        
+        votesQuery.forEach((doc) => {
+          const voteData = doc.data() as Vote;
+          if (!votesByPoll[voteData.poll_id]) {
+            votesByPoll[voteData.poll_id] = [];
+          }
+          votesByPoll[voteData.poll_id].push(voteData);
+        });
+
+        // Calculate vote counts for each poll
+        pollsData.forEach((poll) => {
+          const pollVotes = votesByPoll[poll.id] || [];
+          const voteCounts = new Array(poll.options.length).fill(0);
+          
+          pollVotes.forEach((vote) => {
+            if (vote.option_index >= 0 && vote.option_index < voteCounts.length) {
+              voteCounts[vote.option_index]++;
+            }
+          });
+          
+          poll.votes = voteCounts;
+        });
+
+        setPolls(pollsData.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
       } catch (error) {
         console.error('Error fetching polls:', error);
         Alert.alert('Error', 'Failed to load polls');
@@ -79,6 +121,27 @@ export default function AdminPolls() {
     });
   };
 
+  const parseDate = (dateString: string) => {
+    if (!dateString.trim()) return null;
+    
+    // Parse DD/MM/YYYY HH:MM format
+    const regex = /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/;
+    const match = dateString.trim().match(regex);
+    
+    if (match) {
+      const [, day, month, year, hours, minutes] = match;
+      return new Date(
+        parseInt(year),
+        parseInt(month) - 1,
+        parseInt(day),
+        parseInt(hours),
+        parseInt(minutes)
+      );
+    }
+    
+    return null;
+  };
+
   const handleSave = async () => {
     if (!formData.question.trim()) {
       Alert.alert('Error', 'Please enter a question');
@@ -93,55 +156,120 @@ export default function AdminPolls() {
 
     try {
       if (editingPoll) {
-        // Update existing poll
+        // Update existing poll - preserve existing vote counts for unchanged options
+        const updatedVotes = validOptions.map((option, index) => {
+          // Check if this option existed in the original poll
+          const originalIndex = editingPoll.options.findIndex(opt => opt.trim() === option);
+          if (originalIndex !== -1 && originalIndex < editingPoll.votes.length) {
+            // Preserve existing vote count for unchanged option
+            return editingPoll.votes[originalIndex];
+          } else {
+            // Set 0 for newly added options
+            return 0;
+          }
+        });
+
+        const parsedStartDate = formData.start_date ? parseDate(formData.start_date) : null;
+        const parsedEndDate = formData.end_date ? parseDate(formData.end_date) : null;
+        
         await updateDoc(doc(db, 'polls', editingPoll.id), {
           question: formData.question.trim(),
           options: validOptions.map(opt => opt.trim()),
-          votes: editingPoll.votes || new Array(validOptions.length).fill(0)
+          votes: updatedVotes,
+          start_date: parsedStartDate,
+          end_date: parsedEndDate
         });
         Alert.alert('Success', 'Poll updated successfully!');
       } else {
         // Create new poll
+        const parsedStartDate = formData.start_date ? parseDate(formData.start_date) : null;
+        const parsedEndDate = formData.end_date ? parseDate(formData.end_date) : null;
+        
         await addDoc(collection(db, 'polls'), {
           question: formData.question.trim(),
           options: validOptions.map(opt => opt.trim()),
           votes: new Array(validOptions.length).fill(0),
           is_active: true,
+          start_date: parsedStartDate,
+          end_date: parsedEndDate,
           created_at: serverTimestamp()
         });
         Alert.alert('Success', 'Poll created successfully!');
       }
 
       setModalVisible(false);
-      setFormData({ question: '', options: ['', ''] });
+      setFormData({ question: '', options: ['', ''], start_date: '', end_date: '' });
       setEditingPoll(null);
       
       // Refresh the list
-      const querySnapshot = await getDocs(collection(db, 'polls'));
-      const data: Poll[] = [];
-      querySnapshot.forEach((doc) => {
+      const pollsQuery = await getDocs(collection(db, 'polls'));
+      const pollsData: Poll[] = [];
+      
+      pollsQuery.forEach((doc) => {
         const docData = doc.data();
-        data.push({
+        pollsData.push({
           id: doc.id,
           question: docData.question || '',
           options: docData.options || [],
-          votes: docData.votes || [],
+          votes: [], // Will be populated from votes collection
           is_active: docData.is_active !== false,
+          start_date: docData.start_date,
+          end_date: docData.end_date,
           created_at: docData.created_at
         });
       });
-      setPolls(data.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
+
+      // Fetch votes for each poll
+      const votesQuery = await getDocs(collection(db, 'votes'));
+      const votesByPoll: { [key: string]: Vote[] } = {};
+      
+      votesQuery.forEach((doc) => {
+        const voteData = doc.data() as Vote;
+        if (!votesByPoll[voteData.poll_id]) {
+          votesByPoll[voteData.poll_id] = [];
+        }
+        votesByPoll[voteData.poll_id].push(voteData);
+      });
+
+      // Calculate vote counts for each poll
+      pollsData.forEach((poll) => {
+        const pollVotes = votesByPoll[poll.id] || [];
+        const voteCounts = new Array(poll.options.length).fill(0);
+        
+        pollVotes.forEach((vote) => {
+          if (vote.option_index >= 0 && vote.option_index < voteCounts.length) {
+            voteCounts[vote.option_index]++;
+          }
+        });
+        
+        poll.votes = voteCounts;
+      });
+
+      setPolls(pollsData.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
     } catch (error) {
       console.error('Error saving poll:', error);
       Alert.alert('Error', 'Failed to save poll');
     }
   };
 
+  const formatDateForInput = (date: any) => {
+    if (!date) return '';
+    const d = date.toDate();
+    const day = d.getDate().toString().padStart(2, '0');
+    const month = (d.getMonth() + 1).toString().padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = d.getHours().toString().padStart(2, '0');
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+    return `${day}/${month}/${year} ${hours}:${minutes}`;
+  };
+
   const handleEdit = (poll: Poll) => {
     setEditingPoll(poll);
     setFormData({
       question: poll.question,
-      options: [...poll.options]
+      options: [...poll.options],
+      start_date: formatDateForInput(poll.start_date),
+      end_date: formatDateForInput(poll.end_date)
     });
     setModalVisible(true);
   };
@@ -283,86 +411,114 @@ export default function AdminPolls() {
         onRequestClose={() => {
           setModalVisible(false);
           setEditingPoll(null);
-          setFormData({ question: '', options: ['', ''] });
+          setFormData({ question: '', options: ['', ''], start_date: '', end_date: '' });
         }}
       >
-        <View className="flex-1 items-center justify-center bg-black/50">
-          <View className="mx-5 w-full max-w-lg rounded-2xl bg-white p-6">
-            <Text className="mb-6 text-xl font-bold text-slate-900">
-              {editingPoll ? 'Edit Poll' : 'Create New Poll'}
-            </Text>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          className="flex-1"
+        >
+          <View className="flex-1 items-center justify-center bg-black/50">
+            <View className="mx-5 w-full max-w-lg rounded-2xl bg-white p-6">
+              <Text className="mb-6 text-xl font-bold text-slate-900">
+                {editingPoll ? 'Edit Poll' : 'Create New Poll'}
+              </Text>
 
-            {/* Question */}
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700">Question</Text>
-              <TextInput
-                className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
-                value={formData.question}
-                onChangeText={(text) => setFormData({ ...formData, question: text })}
-                placeholder="Enter poll question"
-              />
-            </View>
-
-            {/* Options */}
-            <View className="mb-4">
-              <View className="flex-row justify-between items-center mb-2">
-                <Text className="text-sm font-medium text-slate-700">Options</Text>
-                {formData.options.length < 6 && (
-                  <TouchableOpacity
-                    onPress={handleAddOption}
-                    className="px-3 py-1 rounded-lg bg-green-500"
-                  >
-                    <Ionicons name="add" size={16} color="#fff" />
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
-
-            <View className="mb-6">
-              {formData.options.map((option, index) => (
-                <View key={index} className="flex-row items-center mb-2">
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Question */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Question</Text>
                   <TextInput
-                    className="flex-1 rounded-lg border border-gray-300 p-3 text-slate-900"
-                    value={option}
-                    onChangeText={(text) => handleOptionChange(index, text)}
-                    placeholder={`Option ${index + 1}`}
+                    className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.question}
+                    onChangeText={(text) => setFormData({ ...formData, question: text })}
+                    placeholder="Enter poll question"
                   />
-                  {formData.options.length > 2 && (
-                    <TouchableOpacity
-                      onPress={() => handleRemoveOption(index)}
-                      className="ml-2 p-2 rounded-lg bg-red-500"
-                    >
-                      <Ionicons name="remove" size={16} color="#fff" />
-                    </TouchableOpacity>
-                  )}
                 </View>
-              ))}
-            </View>
 
-            {/* Action Buttons */}
-            <View className="flex-row gap-3">
-              <TouchableOpacity
-                className="flex-1 rounded-lg bg-gray-200 p-3"
-                onPress={() => {
-                  setModalVisible(false);
-                  setEditingPoll(null);
-                  setFormData({ question: '', options: ['', ''] });
-                }}
-              >
-                <Text className="text-center font-medium text-slate-700">Cancel</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                className="flex-1 rounded-lg bg-primary p-3"
-                onPress={handleSave}
-              >
-                <Text className="text-center font-medium text-white">
-                  {editingPoll ? 'Update' : 'Create'}
-                </Text>
-              </TouchableOpacity>
+                {/* Options */}
+                <View className="mb-4">
+                  <View className="flex-row justify-between items-center mb-2">
+                    <Text className="text-sm font-medium text-slate-700">Options</Text>
+                    {formData.options.length < 6 && (
+                      <TouchableOpacity
+                        onPress={handleAddOption}
+                        className="px-3 py-1 rounded-lg bg-green-500"
+                      >
+                        <Ionicons name="add" size={16} color="#fff" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+
+                <View className="mb-6">
+                  {formData.options.map((option, index) => (
+                    <View key={index} className="flex-row items-center mb-2">
+                      <TextInput
+                        className="flex-1 rounded-lg border border-gray-300 p-3 text-slate-900"
+                        value={option}
+                        onChangeText={(text) => handleOptionChange(index, text)}
+                        placeholder={`Option ${index + 1}`}
+                      />
+                      {formData.options.length > 2 && (
+                        <TouchableOpacity
+                          onPress={() => handleRemoveOption(index)}
+                          className="ml-2 p-2 rounded-lg bg-red-500"
+                        >
+                          <Ionicons name="remove" size={16} color="#fff" />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ))}
+                </View>
+
+                {/* Date Fields */}
+                <View className="mb-4">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">Start Date</Text>
+                  <TextInput
+                    className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.start_date}
+                    onChangeText={(text) => setFormData({ ...formData, start_date: text })}
+                    placeholder="DD/MM/YYYY HH:MM"
+                  />
+                </View>
+
+                <View className="mb-6">
+                  <Text className="mb-2 text-sm font-medium text-slate-700">End Date</Text>
+                  <TextInput
+                    className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
+                    value={formData.end_date}
+                    onChangeText={(text) => setFormData({ ...formData, end_date: text })}
+                    placeholder="DD/MM/YYYY HH:MM"
+                  />
+                </View>
+
+                {/* Action Buttons */}
+                <View className="flex-row gap-3">
+                  <TouchableOpacity
+                    className="flex-1 rounded-lg bg-gray-200 p-3"
+                    onPress={() => {
+                      setModalVisible(false);
+                      setEditingPoll(null);
+                      setFormData({ question: '', options: ['', ''], start_date: '', end_date: '' });
+                    }}
+                  >
+                    <Text className="text-center font-medium text-slate-700">Cancel</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    className="flex-1 rounded-lg bg-primary p-3"
+                    onPress={handleSave}
+                  >
+                    <Text className="text-center font-medium text-white">
+                      {editingPoll ? 'Update' : 'Create'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

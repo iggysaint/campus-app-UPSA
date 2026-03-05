@@ -3,6 +3,7 @@ import { db } from '@/lib/firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 interface Schedule {
   id: string;
@@ -14,6 +15,8 @@ interface Schedule {
   venue: string;
   lecturer: string;
   level: string;
+  programme?: string;
+  study_mode?: string;
 }
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
@@ -48,11 +51,23 @@ export default function ScheduleScreen() {
     setLoading(true);
     try {
       const fullDay = FULL_DAYS[selectedDay as keyof typeof FULL_DAYS];
+      
+      // Skip query if day is undefined
+      if (!fullDay) {
+        setSchedules([]);
+        return;
+      }
+      
       let q;
       
       if (selectedLevel === 'All') {
         q = query(collection(db, 'schedules'), where('day', '==', fullDay));
       } else {
+        // Skip query if level is undefined
+        if (!selectedLevel) {
+          setSchedules([]);
+          return;
+        }
         q = query(
           collection(db, 'schedules'), 
           where('day', '==', fullDay),
@@ -166,29 +181,45 @@ export default function ScheduleScreen() {
         ) : (
           schedules.map((schedule) => (
             <View key={schedule.id} style={styles.scheduleCard}>
-              <View style={styles.scheduleHeader}>
-                <Text style={styles.courseCode}>{schedule.course_code}</Text>
-                <View style={styles.levelBadge}>
-                  <Text style={styles.levelText}>{schedule.level}</Text>
-                </View>
-              </View>
-              
-              <Text style={styles.courseName}>{schedule.course_name}</Text>
-              
-              <View style={styles.timeRow}>
-                <Text style={styles.timeText}>
-                  {schedule.start_time} - {schedule.end_time}
+              {/* TOP ROW: Programme/Class Group (LEFT) + Time Slot (RIGHT) */}
+              <View style={styles.topRow}>
+                <Text style={styles.programmeText}>
+                  {schedule.programme || schedule.course_code}
                 </Text>
+                <View style={styles.timePill}>
+                  <Text style={styles.timePillText}>
+                    {schedule.start_time} - {schedule.end_time}
+                  </Text>
+                </View>
               </View>
               
-              <View style={styles.scheduleDetails}>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailIcon}>📍</Text>
-                  <Text style={styles.detailValue}>{schedule.venue}</Text>
+              {/* MIDDLE SECTION: Course Name + Course Code */}
+              <View style={styles.middleSection}>
+                <Text style={styles.courseName}>{schedule.course_name}</Text>
+                <Text style={styles.courseCodeText}>{schedule.course_code}</Text>
+              </View>
+              
+              {/* BOTTOM ROW: Venue & Lecturer (LEFT) + Level & Study Mode (RIGHT) */}
+              <View style={styles.bottomRow}>
+                <View style={styles.detailsLeft}>
+                  <View style={styles.iconRow}>
+                    <Ionicons name="location-outline" size={14} color="#888888" />
+                    <Text style={styles.venueText}>{schedule.venue}</Text>
+                  </View>
+                  <View style={styles.iconRow}>
+                    <Ionicons name="person-outline" size={14} color="#888888" />
+                    <Text style={styles.lecturerText}>{schedule.lecturer}</Text>
+                  </View>
                 </View>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailIcon}>👤</Text>
-                  <Text style={styles.detailValue}>{schedule.lecturer}</Text>
+                <View style={styles.badgesRight}>
+                  <View style={styles.levelPill}>
+                    <Text style={styles.pillText}>{schedule.level}</Text>
+                  </View>
+                  {schedule.study_mode && (
+                    <View style={styles.studyModePill}>
+                      <Text style={styles.pillText}>{schedule.study_mode}</Text>
+                    </View>
+                  )}
                 </View>
               </View>
             </View>
@@ -308,65 +339,93 @@ const styles = StyleSheet.create({
   },
   scheduleCard: {
     backgroundColor: '#fff',
-    borderRadius: RADIUS.md,
-    padding: SPACING.lg,
-    marginBottom: SPACING.md,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  scheduleHeader: {
+  topRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
+    marginBottom: 10,
   },
-  courseCode: {
-    fontSize: 16,
-    fontWeight: '700',
+  programmeText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111111',
+    flex: 1,
+  },
+  timePill: {
+    backgroundColor: '#EAF5FD',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  timePillText: {
+    fontSize: 11,
+    fontWeight: '500',
     color: '#0088CC',
   },
-  levelBadge: {
-    backgroundColor: '#E0E0E0',
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
-    borderRadius: RADIUS.sm,
-  },
-  levelText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#666666',
+  middleSection: {
+    marginBottom: 10,
   },
   courseName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#000000',
-    marginBottom: SPACING.sm,
-  },
-  timeRow: {
-    marginBottom: SPACING.md,
-  },
-  timeText: {
     fontSize: 14,
-    fontWeight: '500',
-    color: COLORS.textSecondary,
+    fontWeight: '600',
+    color: '#111111',
+    marginBottom: 2,
   },
-  scheduleDetails: {
-    gap: SPACING.sm,
+  courseCodeText: {
+    fontSize: 12,
+    color: '#888888',
   },
-  detailRow: {
+  bottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  detailsLeft: {
+    flex: 1,
+  },
+  iconRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
+    marginBottom: 1,
   },
-  detailIcon: {
-    fontSize: 16,
+  venueText: {
+    fontSize: 12,
+    color: '#888888',
+    marginLeft: 4,
   },
-  detailValue: {
-    fontSize: 14,
+  lecturerText: {
+    fontSize: 12,
+    color: '#888888',
+    marginLeft: 4,
+  },
+  badgesRight: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  levelPill: {
+    backgroundColor: '#EAF5FD',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  studyModePill: {
+    backgroundColor: '#EAF5FD',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  pillText: {
+    fontSize: 10,
     fontWeight: '500',
-    color: COLORS.text,
+    color: '#0088CC',
   },
 });

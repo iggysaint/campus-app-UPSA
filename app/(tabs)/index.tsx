@@ -1,15 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { useAuth } from '@/lib/auth-context';
+import { db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/lib/auth-context';
+import { collection, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 
 type Announcement = {
   id: string;
-  title: string | null;
-  body: string | null;
-  created_at: string | null;
+  title: string;
+  body: string;
+  category: string;
+  target_audience: string;
+  created_at: any;
+  is_active: boolean;
 };
 
 function getDayGreeting(date = new Date()): 'morning' | 'afternoon' | 'evening' {
@@ -19,9 +23,9 @@ function getDayGreeting(date = new Date()): 'morning' | 'afternoon' | 'evening' 
   return 'evening';
 }
 
-function formatShortDate(value?: string | null) {
-  if (!value) return '';
-  const d = new Date(value);
+function formatShortDate(timestamp: any) {
+  if (!timestamp) return '';
+  const d = timestamp.toDate();
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
@@ -48,13 +52,36 @@ function ActionCard(props: {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { profile } = useAuth();
+  const { user } = useAuth();
+  const [userName, setUserName] = useState('Student');
+  const [loadingName, setLoadingName] = useState(true);
 
-  const name = useMemo(() => {
-    const raw = profile?.full_name ?? profile?.email ?? 'Student';
-    const first = raw.split(' ')[0]?.trim();
-    return first || 'Student';
-  }, [profile?.email, profile?.full_name]);
+  // Fetch user's name from Firestore
+  useEffect(() => {
+    if (user) {
+      const fetchUserName = async () => {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            const fullName = userData?.full_name || userData?.name || 'Student';
+            const first = fullName.split(' ')[0]?.trim();
+            setUserName(first || 'Student');
+          }
+        } catch (error) {
+          console.error('Error fetching user name:', error);
+          setUserName('Student');
+        } finally {
+          setLoadingName(false);
+        }
+      };
+
+      fetchUserName();
+    } else {
+      setUserName('Student');
+      setLoadingName(false);
+    }
+  }, [user]);
 
   const greeting = useMemo(() => getDayGreeting(), []);
 
@@ -67,19 +94,38 @@ export default function HomeScreen() {
     (async () => {
       try {
         setLoadingAnnouncements(true);
-        const { data, error } = await supabase
-          .from('announcements')
-          .select('id, title, body, created_at')
-          .order('created_at', { ascending: false })
-          .limit(3);
-
+        const q = query(
+          collection(db, 'announcements'),
+          where('is_active', '==', true),
+          limit(10)
+        );
+        
+        const querySnapshot = await getDocs(q);
+        
+        console.log('Announcements query snapshot:', querySnapshot);
+        console.log('Snapshot size:', querySnapshot.size);
+        
         if (cancelled) return;
-        if (error || !data) {
-          setAnnouncements([]);
-          return;
-        }
-        setAnnouncements(data as Announcement[]);
-      } catch {
+        
+        const data: Announcement[] = [];
+        querySnapshot.forEach((doc) => {
+          const docData = doc.data();
+          console.log('Document data:', docData);
+          data.push({
+            id: doc.id,
+            title: docData.title || '',
+            body: docData.body || '',
+            category: docData.category || 'general',
+            target_audience: docData.target_audience || 'all',
+            created_at: docData.created_at,
+            is_active: docData.is_active !== false
+          });
+        });
+        
+        console.log('Final announcements array:', data);
+        setAnnouncements(data);
+      } catch (err) {
+        console.error('Announcements fetch error:', err);
         if (!cancelled) setAnnouncements([]);
       } finally {
         if (!cancelled) setLoadingAnnouncements(false);
@@ -99,7 +145,7 @@ export default function HomeScreen() {
             <View className="flex-1 pr-3">
               <Text className="text-sm text-slate-500">UPSA Campus</Text>
               <Text className="mt-1 text-2xl font-extrabold text-slate-900">
-                Good {greeting} {name}
+                Good {greeting} {loadingName ? '...' : userName}
               </Text>
             </View>
 
@@ -121,7 +167,7 @@ export default function HomeScreen() {
                 title="Announcements"
                 subtitle="Campus updates"
                 icon="megaphone-outline"
-                onPress={() => router.push('/announcements')}
+                onPress={() => router.push('/(tabs)/announcements')}
               />
               <ActionCard
                 title="Schedule"
@@ -165,7 +211,7 @@ export default function HomeScreen() {
           <View className="mt-8">
             <View className="mb-3 flex-row items-center justify-between">
               <Text className="text-base font-semibold text-slate-900">Recent announcements</Text>
-              <Pressable onPress={() => router.push('/announcements')} className="active:opacity-80">
+              <Pressable onPress={() => router.push('/(tabs)/announcements')} className="active:opacity-80">
                 <Text className="text-sm font-semibold text-primary">See all</Text>
               </Pressable>
             </View>
@@ -183,20 +229,45 @@ export default function HomeScreen() {
                 {announcements.map((a) => (
                   <Pressable
                     key={a.id}
-                    onPress={() => router.push('/announcements')}
+                    onPress={() => router.push('/(tabs)/announcements')}
                     className="rounded-2xl bg-white p-4 shadow-sm active:opacity-90"
                   >
                     <View className="flex-row items-start justify-between">
-                      <Text className="flex-1 pr-3 text-base font-semibold text-slate-900">
-                        {a.title ?? 'Announcement'}
-                      </Text>
-                      <Text className="text-xs text-slate-400">{formatShortDate(a.created_at)}</Text>
+                      <View className="flex-1 pr-3">
+                        <Text className="text-base font-semibold text-slate-900">
+                          {a.title}
+                        </Text>
+                        <View className="flex-row items-center mb-2">
+                          <View 
+                            className="px-2 py-1 rounded-full mr-2"
+                            style={{
+                              backgroundColor: a.category === 'urgent' ? '#FEE2E2' :
+                                           a.category === 'academic' ? '#DBEAFE' :
+                                           a.category === 'event' ? '#D1FAE5' :
+                                           '#F3F4F6'
+                            }}
+                          >
+                            <Text 
+                              className="text-xs font-medium"
+                              style={{
+                                color: a.category === 'urgent' ? '#DC2626' :
+                                       a.category === 'academic' ? '#2563EB' :
+                                       a.category === 'event' ? '#059669' :
+                                       '#6B7280'
+                              }}
+                            >
+                              {a.category.toUpperCase()}
+                            </Text>
+                          </View>
+                          <Text className="text-xs text-slate-400">{formatShortDate(a.created_at)}</Text>
+                        </View>
+                        {!!a.body && (
+                          <Text className="mt-2 text-sm text-slate-600" numberOfLines={2}>
+                            {a.body}
+                          </Text>
+                        )}
+                      </View>
                     </View>
-                    {!!a.body && (
-                      <Text className="mt-2 text-sm text-slate-600" numberOfLines={2}>
-                        {a.body}
-                      </Text>
-                    )}
                   </Pressable>
                 ))}
               </View>
