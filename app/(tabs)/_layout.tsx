@@ -24,8 +24,17 @@ export default function TabsLayout() {
         headerTintColor: '#fff',
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: COLORS.textSecondary,
+
         tabBarStyle: {
-          justifyContent: 'space-between',
+          height: 60,
+        },
+
+        tabBarItemStyle: {
+          flex: 1,
+        },
+
+        tabBarLabelStyle: {
+          fontSize: 11,
         },
       }}
     >
@@ -39,6 +48,7 @@ export default function TabsLayout() {
           ),
         }}
       />
+
       <Tabs.Screen
         name="schedule"
         options={{
@@ -48,6 +58,7 @@ export default function TabsLayout() {
           ),
         }}
       />
+
       <Tabs.Screen
         name="clubs"
         options={{
@@ -57,6 +68,7 @@ export default function TabsLayout() {
           ),
         }}
       />
+
       <Tabs.Screen
         name="library"
         options={{
@@ -66,6 +78,7 @@ export default function TabsLayout() {
           ),
         }}
       />
+
       <Tabs.Screen
         name="profile"
         options={{
@@ -75,30 +88,12 @@ export default function TabsLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="polls"
-        options={{
-          title: 'Polls',
-          tabBarButton: () => null,
-        }}
-      />
-      <Tabs.Screen
-        name="hostel"
-        options={{
-          title: 'Hostel',
-          tabBarButton: () => null,
-        }}
-      />
-      <Tabs.Screen
-        name="admin"
-        options={{
-          title: 'Admin',
-          tabBarButton: () => null,
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="shield-checkmark" size={size} color={color} />
-          ),
-        }}
-      />
+
+      {/* Hidden routes (not part of tab bar) */}
+      <Tabs.Screen name="polls" options={{ href: null }} />
+      <Tabs.Screen name="hostel" options={{ href: null }} />
+      <Tabs.Screen name="admin" options={{ href: null }} />
+      <Tabs.Screen name="announcements" options={{ href: null }} />
     </Tabs>
   );
 }
