@@ -50,15 +50,28 @@ export default function LibraryScreen() {
 
   const fetchResources = async () => {
     try {
+      console.log('🔍 Fetching library resources...');
       const q = query(collection(db, 'library'), where('is_active', '==', true));
+      console.log('📝 Query created:', q);
+      
       const querySnapshot = await getDocs(q);
+      console.log('📊 Query snapshot received, docs count:', querySnapshot.size);
+      
       const resourcesData: LibraryResource[] = [];
       querySnapshot.forEach((doc) => {
+        console.log('📄 Processing doc:', doc.id, 'data:', doc.data());
         resourcesData.push({ id: doc.id, ...doc.data() } as LibraryResource);
       });
+      
+      console.log('✅ Resources fetched successfully:', resourcesData.length);
+      console.log('📋 Resources data:', resourcesData);
       setResources(resourcesData);
     } catch (error) {
-      console.error('Error fetching resources:', error);
+      console.error('❌ Error fetching resources:', error);
+      console.error('🔥 Full error details:', JSON.stringify(error, null, 2));
+      console.error('📱 Error code:', error.code);
+      console.error('📝 Error message:', error.message);
+      console.error('🔗 Error stack:', error.stack);
     } finally {
       setLoading(false);
     }
