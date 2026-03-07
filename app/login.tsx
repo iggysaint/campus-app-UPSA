@@ -1,15 +1,16 @@
-import { COLORS, RADIUS, SPACING } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { auth, db } from '@/lib/firebase';
 import { RateLimitError } from '@/lib/rate-limit';
 import { validateLoginCredentials } from '@/lib/validation';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { signOut } from 'firebase/auth';
+import { sendPasswordResetEmail, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -25,6 +26,21 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  const handleForgotPassword = async () => {
+    if (!email.trim()) {
+      Alert.alert('Error', 'Please enter your email address first.');
+      return;
+    }
+    
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      Alert.alert('Password Reset', 'Password reset email sent! Check your inbox.');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to send password reset email. Please try again.');
+    }
+  };
 
   const handleEmailLogin = async () => {
     const validation = validateLoginCredentials({ email, password });
@@ -48,23 +64,18 @@ export default function LoginScreen() {
     // Check email verification
     if (!auth.currentUser?.emailVerified && auth.currentUser) {
       try {
-        // Check user role in Firestore
         const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
         if (userDoc.exists()) {
           const userRole = userDoc.data().role;
-          
           if (userRole === 'admin') {
-            // Allow admin users with unverified email
             router.replace('/(tabs)');
             return;
           } else {
-            // Block students with unverified email
             await signOut(auth);
             Alert.alert('Email not verified', 'Please verify your email before logging in. Check your inbox and spam folder.');
             return;
           }
         } else {
-          // User document doesn't exist, block login
           await signOut(auth);
           Alert.alert('Email not verified', 'Please verify your email before logging in. Check your inbox and spam folder.');
           return;
@@ -86,51 +97,87 @@ export default function LoginScreen() {
       style={styles.container}
     >
       <View style={styles.content}>
+        <Image 
+          source={require('@/assets/images/icon.png')} 
+          style={styles.logo}
+          resizeMode="contain"
+        />
+        
         <Text style={styles.title}>UPSA Campus</Text>
-        <Text style={styles.subtitle}>Sign in to continue</Text>
-
-        <View style={styles.card}>
+        
+        <View style={styles.spacer} />
+        
+        <TextInput
+          style={styles.input}
+          placeholder="Email"
+          placeholderTextColor="#888888"
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
+          autoComplete="email"
+          editable={!loading}
+        />
+        
+        <View style={styles.passwordContainer}>
           <TextInput
-            style={styles.input}
-            placeholder="Email"
-            placeholderTextColor={COLORS.textSecondary}
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            autoComplete="email"
-            editable={!loading}
-          />
-          <TextInput
-            style={styles.input}
+            style={[styles.input, styles.passwordInput]}
             placeholder="Password"
-            placeholderTextColor={COLORS.textSecondary}
+            placeholderTextColor="#888888"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
+            secureTextEntry={!showPassword}
             autoComplete="password"
             editable={!loading}
           />
           <TouchableOpacity
-            style={[styles.signInButton, loading && styles.buttonDisabled]}
-            onPress={handleEmailLogin}
-            disabled={loading}
+            style={styles.eyeIcon}
+            onPress={() => setShowPassword(!showPassword)}
           >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.signInButtonText}>Sign In</Text>
-            )}
+            <Ionicons 
+              name={showPassword ? "eye-off-outline" : "eye-outline"} 
+              size={20} 
+              color="#888888" 
+            />
           </TouchableOpacity>
         </View>
-
+        
         <TouchableOpacity
-          style={styles.createAccountLink}
-          onPress={() => router.push('/register')}
+          style={[styles.signInButton, loading && styles.buttonDisabled]}
+          onPress={handleEmailLogin}
           disabled={loading}
         >
-          <Text style={styles.createAccountText}>Create New Account</Text>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.signInButtonText}>Log In</Text>
+          )}
         </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={styles.forgotPasswordLink}
+          onPress={handleForgotPassword}
+          disabled={loading}
+        >
+          <Text style={styles.forgotPasswordText}>Forgot password?</Text>
+        </TouchableOpacity>
+        
+        <View style={styles.spacer} />
+        
+        <View style={styles.divider}>
+          <View style={styles.dividerLine} />
+          <Text style={styles.dividerText}>OR</Text>
+          <View style={styles.dividerLine} />
+        </View>
+        
+        <View style={styles.spacer} />
+        
+        <View style={styles.createAccountContainer}>
+          <Text style={styles.createAccountText}>Don't have an account? </Text>
+          <TouchableOpacity onPress={() => router.push('/register')}>
+            <Text style={styles.createAccountLink}>Create new account.</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -139,65 +186,108 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
   },
   content: {
-    flex: 1,
-    paddingHorizontal: SPACING.lg,
-    paddingTop: 80,
+    width: '100%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  logo: {
+    width: 80,
+    height: 80,
+    borderRadius: 20,
+    marginBottom: 24,
   },
   title: {
     fontSize: 28,
     fontWeight: '700',
-    color: COLORS.primary,
-    marginBottom: SPACING.xs,
+    color: '#111111',
+    marginBottom: 8,
+    textAlign: 'center',
   },
-  subtitle: {
-    fontSize: 16,
-    color: COLORS.textSecondary,
-    marginBottom: SPACING.xl,
-  },
-  card: {
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.md,
-    padding: SPACING.lg,
-    marginBottom: SPACING.lg,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+  spacer: {
+    height: 24,
   },
   input: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: RADIUS.sm,
-    paddingHorizontal: SPACING.md,
-    marginBottom: SPACING.md,
+    height: 52,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingHorizontal: 16,
     fontSize: 16,
-    color: COLORS.text,
-    backgroundColor: COLORS.background,
+    color: '#111111',
+    borderWidth: 0,
+    marginBottom: 16,
+    width: '100%',
+  },
+  passwordContainer: {
+    position: 'relative',
+    width: '100%',
+  },
+  passwordInput: {
+    paddingRight: 48,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 16,
+    top: 16,
   },
   signInButton: {
-    height: 48,
-    backgroundColor: COLORS.primary,
-    borderRadius: RADIUS.sm,
+    height: 52,
+    backgroundColor: '#0088CC',
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    width: '100%',
+    marginBottom: 16,
   },
   signInButtonText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },
   buttonDisabled: {
     opacity: 0.7,
   },
-  createAccountLink: {
+  forgotPasswordLink: {
     alignItems: 'center',
-    marginTop: SPACING.lg,
+    marginBottom: 16,
+  },
+  forgotPasswordText: {
+    color: '#0088CC',
+    fontSize: 16,
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 24,
+    width: '100%',
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E0E0E0',
+  },
+  dividerText: {
+    paddingHorizontal: 16,
+    color: '#888888',
+    fontSize: 14,
+  },
+  createAccountContainer: {
+    alignItems: 'center',
+    marginTop: 8,
   },
   createAccountText: {
-    color: COLORS.primary,
+    color: '#666666',
     fontSize: 16,
-    fontWeight: '500',
+    marginBottom: 4,
+  },
+  createAccountLink: {
+    color: '#0088CC',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

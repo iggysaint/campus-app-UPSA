@@ -1,5 +1,6 @@
 import { COLORS, RADIUS, SPACING } from '@/constants/theme';
 import { auth, db } from '@/lib/firebase';
+import { Ionicons } from '@expo/vector-icons';
 import { addDoc, collection, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -69,9 +70,9 @@ export default function LibraryScreen() {
     } catch (error) {
       console.error('❌ Error fetching resources:', error);
       console.error('🔥 Full error details:', JSON.stringify(error, null, 2));
-      console.error('📱 Error code:', error.code);
-      console.error('📝 Error message:', error.message);
-      console.error('🔗 Error stack:', error.stack);
+      console.error('📱 Error code:', (error as any)?.code);
+      console.error('📝 Error message:', (error as any)?.message);
+      console.error('🔗 Error stack:', (error as any)?.stack);
     } finally {
       setLoading(false);
     }
@@ -179,18 +180,39 @@ export default function LibraryScreen() {
     }
   };
 
-  const getCategoryColor = (category: string) => {
-    const colors: { [key: string]: string } = {
-      'PDF': '#FF6B6B',
-      'Past Paper': '#4ECDC4',
-      'Template': '#45B7D1',
-      'Letter': '#96CEB4',
-      'Slides': '#FFEAA7',
-      'Videos': '#DDA0DD',
-      'Notes': '#98D8C8',
-      'Books': '#F8B500',
+  const getCategoryColors = (category: string) => {
+    const colors: { [key: string]: { bg: string; text: string } } = {
+      'PDF': { bg: '#FDEAEA', text: '#DC2626' },
+      'Video': { bg: '#F3E8FF', text: '#9333EA' },
+      'Past Paper': { bg: '#FEF3C7', text: '#D97706' },
+      'Template': { bg: '#D1FAE5', text: '#059669' },
+      'Letter': { bg: '#DBEAFE', text: '#2563EB' },
+      'Notes': { bg: '#FEF9C3', text: '#CA8A04' },
+      'Slides': { bg: '#FCE7F3', text: '#DB2777' },
+      'Books': { bg: '#F3F4F6', text: '#6B7280' },
     };
-    return colors[category] || '#95A5A6';
+    return colors[category] || { bg: '#F3F4F6', text: '#6B7280' };
+  };
+
+  const getFileIcon = (category: string) => {
+    switch (category) {
+      case 'PDF':
+      case 'Past Paper':
+      case 'Letter':
+      case 'Template':
+        return 'document-text-outline';
+      case 'Video':
+      case 'Videos':
+        return 'videocam-outline';
+      case 'Slides':
+        return 'layers-outline';
+      case 'Notes':
+        return 'create-outline';
+      case 'Books':
+        return 'book-outline';
+      default:
+        return 'document-outline';
+    }
   };
 
   if (loading) {
@@ -271,37 +293,61 @@ export default function LibraryScreen() {
             </Text>
           </View>
         ) : (
-          filteredResources.map((resource) => (
+          filteredResources.filter(resource => resource != null).map((resource) => (
             <View key={resource.id} style={styles.resourceCard}>
-              <View style={styles.resourceHeader}>
-                <View style={[
-                  styles.categoryBadge,
-                  { backgroundColor: getCategoryColor(resource.category) }
-                ]}>
-                  <Text style={styles.categoryBadgeText}>{resource.category}</Text>
+              {/* TOP ROW */}
+              <View style={styles.topRow}>
+                {/* File Icon */}
+                <View style={styles.iconContainer}>
+                  <Ionicons 
+                    name={getFileIcon(resource.category)} 
+                    size={20} 
+                    color="#0088CC" 
+                  />
                 </View>
-                {userRole === 'admin' && (
-                  <TouchableOpacity
-                    style={styles.deleteButton}
-                    onPress={() => deleteResource(resource.id)}
-                  >
-                    <Text style={styles.deleteButtonText}>🗑️</Text>
-                  </TouchableOpacity>
-                )}
+                
+                {/* Title and Description */}
+                <View style={styles.titleContainer}>
+                  <Text style={styles.resourceTitle}>{resource.title}</Text>
+                  <Text style={styles.resourceDescription} numberOfLines={1}>
+                    {resource.description}
+                  </Text>
+                </View>
               </View>
               
-              <Text style={styles.resourceTitle}>{resource.title}</Text>
+              {/* BOTTOM ROW */}
+              <View style={styles.bottomRow}>
+                {/* Category Badge */}
+                <View style={[
+                  styles.categoryBadge,
+                  { backgroundColor: getCategoryColors(resource.category).bg }
+                ]}>
+                  <Text style={[
+                    styles.categoryBadgeText,
+                    { color: getCategoryColors(resource.category).text }
+                  ]}>
+                    {resource.category}
+                  </Text>
+                </View>
+                
+                {/* Open Button */}
+                <TouchableOpacity
+                  style={styles.openButton}
+                  onPress={() => Linking.openURL(resource.url)}
+                >
+                  <Text style={styles.openButtonText}>Open</Text>
+                </TouchableOpacity>
+              </View>
               
-              <Text style={styles.resourceDescription} numberOfLines={3}>
-                {resource.description}
-              </Text>
-              
-              <TouchableOpacity
-                style={styles.openButton}
-                onPress={() => Linking.openURL(resource.url)}
-              >
-                <Text style={styles.openButtonText}>Open</Text>
-              </TouchableOpacity>
+              {/* Admin Delete Button */}
+              {userRole === 'admin' && (
+                <TouchableOpacity
+                  style={styles.deleteButton}
+                  onPress={() => deleteResource(resource.id)}
+                >
+                  <Ionicons name="trash-outline" size={16} color="#DC2626" />
+                </TouchableOpacity>
+              )}
             </View>
           ))
         )}
@@ -507,61 +553,73 @@ const styles = StyleSheet.create({
   },
   resourceCard: {
     backgroundColor: '#fff',
-    borderRadius: RADIUS.md,
-    padding: SPACING.lg,
-    marginBottom: SPACING.md,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  resourceHeader: {
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  iconContainer: {
+    width: 40,
+    height: 40,
+    backgroundColor: '#EAF5FD',
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  titleContainer: {
+    flex: 1,
+  },
+  resourceTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111111',
+    marginBottom: 2,
+  },
+  resourceDescription: {
+    fontSize: 13,
+    color: '#888888',
+    lineHeight: 18,
+  },
+  bottomRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
   },
   categoryBadge: {
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: SPACING.xs,
-    borderRadius: RADIUS.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   categoryBadgeText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  openButton: {
+    backgroundColor: '#0088CC',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  openButtonText: {
     fontSize: 12,
     fontWeight: '600',
     color: '#fff',
   },
   deleteButton: {
-    padding: SPACING.xs,
-    borderRadius: RADIUS.sm,
-  },
-  deleteButtonText: {
-    fontSize: 16,
-  },
-  resourceTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: SPACING.sm,
-  },
-  resourceDescription: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    lineHeight: 20,
-    marginBottom: SPACING.md,
-  },
-  openButton: {
-    backgroundColor: '#0088CC',
-    borderRadius: RADIUS.sm,
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.lg,
-    alignSelf: 'flex-start',
-  },
-  openButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    padding: 4,
   },
   fab: {
     position: 'absolute',

@@ -2,12 +2,12 @@ import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import {
-    addDoc,
-    collection,
-    getDocs,
-    onSnapshot,
-    query,
-    where
+  addDoc,
+  collection,
+  getDocs,
+  onSnapshot,
+  query,
+  where
 } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';

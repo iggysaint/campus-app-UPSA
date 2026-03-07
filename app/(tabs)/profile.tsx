@@ -4,19 +4,20 @@ import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { addDoc, collection, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { deleteUser, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
+import { addDoc, collection, deleteDoc, doc, getDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 interface UserProfile {
-  full_name: string;
+  name: string;
   email: string;
   role: string;
   programme: string;
   level: string;
   study_mode: string;
   gender: string;
-  phone?: string;
+  student_id?: string;
 }
 
 interface AppSettings {
@@ -29,7 +30,6 @@ export default function ProfileScreen() {
   const router = useRouter();
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showEditPhoneModal, setShowEditPhoneModal] = useState(false);
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
@@ -38,7 +38,6 @@ export default function ProfileScreen() {
     darkMode: false,
     notifications: true,
   });
-  const [editPhone, setEditPhone] = useState('');
 
   useEffect(() => {
     fetchUserProfile();
@@ -47,12 +46,10 @@ export default function ProfileScreen() {
 
   const fetchUserProfile = async () => {
     try {
-      if (auth.currentUser) {
-        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-        if (userDoc.exists()) {
-          setUserProfile(userDoc.data() as UserProfile);
-          setEditPhone(userDoc.data().phone || '');
-        }
+      if (!auth || !auth.currentUser) return;
+      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (userDoc.exists()) {
+        setUserProfile(userDoc.data() as UserProfile);
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
@@ -71,22 +68,6 @@ export default function ProfileScreen() {
       });
     } catch (error) {
       console.error('Error loading app settings:', error);
-    }
-  };
-
-  const savePhone = async () => {
-    try {
-      if (auth.currentUser && userProfile) {
-        await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-          phone: editPhone.trim(),
-        });
-        setUserProfile({ ...userProfile, phone: editPhone.trim() });
-        setShowEditPhoneModal(false);
-        Alert.alert('Success', 'Phone number updated successfully');
-      }
-    } catch (error) {
-      console.error('Error updating phone:', error);
-      Alert.alert('Error', 'Failed to update phone number');
     }
   };
 
@@ -129,6 +110,59 @@ export default function ProfileScreen() {
       console.error('Error sending support message:', error);
       Alert.alert('Error', 'Failed to send message');
     }
+  };
+
+  const deleteAccount = async () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account and all your data. This cannot be undone. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: () => {
+            Alert.prompt(
+              'Confirm Password',
+              'Please enter your password to confirm account deletion.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  onPress: async (password) => {
+                    if (!password || password.length === 0) {
+                      Alert.alert('Error', 'Please enter your password.');
+                      return;
+                    }
+                    
+                    try {
+                      const credential = EmailAuthProvider.credential(auth.currentUser?.email || '', password);
+                      await reauthenticateWithCredential(auth.currentUser, credential);
+                      
+                      // Delete Firestore document
+                      await deleteDoc(doc(db, 'users', auth.currentUser.uid));
+                      
+                      // Delete Firebase Auth account
+                      await deleteUser(auth.currentUser);
+                      
+                      // Navigate to login
+                      router.replace('/login');
+                    } catch (error: any) {
+                      if (error.code === 'auth/wrong-password') {
+                        Alert.alert('Error', 'Incorrect password. Please try again.');
+                      } else {
+                        Alert.alert('Error', 'Failed to delete account. Please try again.');
+                      }
+                    }
+                  },
+                },
+              ],
+              'secure-text'
+            );
+          },
+        },
+      ]
+    );
   };
 
   const handleSignOut = () => {
@@ -175,11 +209,11 @@ export default function ProfileScreen() {
         <View style={styles.profileHeader}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
-              {userProfile?.full_name ? getInitials(userProfile.full_name) : 'U'}
+              {userProfile?.name ? getInitials(userProfile.name) : 'U'}
             </Text>
           </View>
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>{userProfile?.full_name || 'User'}</Text>
+            <Text style={styles.userName}>{userProfile?.name || 'User'}</Text>
             <Text style={styles.userEmail}>{userProfile?.email || 'user@example.com'}</Text>
             <View style={[
               styles.roleBadge,
@@ -213,6 +247,33 @@ export default function ProfileScreen() {
             <View style={styles.infoTextContainer}>
               <Text style={styles.infoLabel}>Level</Text>
               <Text style={styles.infoValue}>{userProfile?.level || 'Not specified'}</Text>
+            </View>
+          </View>
+          <View style={styles.infoRow}>
+            <View style={styles.infoIcon}>
+              <Ionicons name="card-outline" size={20} color="#0088CC" />
+            </View>
+            <View style={styles.infoTextContainer}>
+              <Text style={styles.infoLabel}>Student ID</Text>
+              <Text style={styles.infoValue}>{userProfile?.student_id || 'Not specified'}</Text>
+            </View>
+          </View>
+          <View style={styles.infoRow}>
+            <View style={styles.infoIcon}>
+              <Ionicons name="person-outline" size={20} color="#0088CC" />
+            </View>
+            <View style={styles.infoTextContainer}>
+              <Text style={styles.infoLabel}>Gender</Text>
+              <Text style={styles.infoValue}>{userProfile?.gender || 'Not specified'}</Text>
+            </View>
+          </View>
+          <View style={styles.infoRow}>
+            <View style={styles.infoIcon}>
+              <Ionicons name="time-outline" size={20} color="#0088CC" />
+            </View>
+            <View style={styles.infoTextContainer}>
+              <Text style={styles.infoLabel}>Study Mode</Text>
+              <Text style={styles.infoValue}>{userProfile?.study_mode || 'Not specified'}</Text>
             </View>
           </View>
         </View>
@@ -295,52 +356,20 @@ export default function ProfileScreen() {
             </View>
             <Text style={styles.logoutText}>Log Out</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionCard, styles.deleteAccountCard]}
+            onPress={deleteAccount}
+          >
+            <View style={[styles.actionIcon, styles.deleteAccountIcon]}>
+              <Ionicons name="trash-outline" size={20} color="#DC2626" />
+            </View>
+            <Text style={styles.deleteAccountText}>Delete Account</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Footer */}
         <Text style={styles.footer}>Campus App UPSA v1.0.0</Text>
       </ScrollView>
-
-      {/* Edit Phone Modal */}
-      <Modal
-        visible={showEditPhoneModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={() => setShowEditPhoneModal(false)}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Edit Phone Number</Text>
-            <TouchableOpacity onPress={() => setShowEditPhoneModal(false)}>
-              <Text style={styles.modalClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.modalContent}>
-            <Text style={styles.inputLabel}>Phone Number</Text>
-            <TextInput
-              style={styles.input}
-              value={editPhone}
-              onChangeText={setEditPhone}
-              placeholder="Enter your phone number"
-              keyboardType="phone-pad"
-            />
-          </View>
-          <View style={styles.modalFooter}>
-            <TouchableOpacity
-              style={[styles.modalButton, styles.cancelButton]}
-              onPress={() => setShowEditPhoneModal(false)}
-            >
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalButton, styles.saveButton]}
-              onPress={savePhone}
-            >
-              <Text style={styles.saveButtonText}>Save</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* Notifications Modal */}
       <Modal
@@ -617,11 +646,24 @@ const styles = StyleSheet.create({
   },
   logoutIconText: {
     color: '#FF4444',
+    fontSize: 16,
+    fontWeight: '500',
   },
   logoutText: {
     fontSize: 16,
     fontWeight: '500',
     color: '#FF4444',
+  },
+  deleteAccountCard: {
+    backgroundColor: '#FEE2E2',
+  },
+  deleteAccountIcon: {
+    backgroundColor: '#FEE2E2',
+  },
+  deleteAccountText: {
+    color: '#DC2626',
+    fontSize: 16,
+    fontWeight: '500',
   },
   footer: {
     fontSize: 12,

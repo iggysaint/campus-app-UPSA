@@ -1,4 +1,4 @@
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
@@ -77,7 +77,8 @@ export default function AdminLibrary() {
           title: formData.title.trim(),
           description: formData.description.trim(),
           category: formData.category,
-          file_url: formData.file_url
+          url: formData.file_url,
+          is_active: true
         });
         Alert.alert('Success', 'File updated successfully!');
       } else {
@@ -86,8 +87,10 @@ export default function AdminLibrary() {
           title: formData.title.trim(),
           description: formData.description.trim(),
           category: formData.category,
-          file_url: formData.file_url,
-          created_at: serverTimestamp()
+          url: formData.file_url,
+          uploaded_by: auth.currentUser?.uid,
+          created_at: serverTimestamp(),
+          is_active: true
         });
         Alert.alert('Success', 'File uploaded successfully!');
       }
