@@ -1,7 +1,8 @@
 import { COLORS, RADIUS, SPACING } from '@/constants/theme';
 import { auth, db } from '@/lib/firebase';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
+import { createUserWithEmailAndPassword, deleteUser, sendEmailVerification } from 'firebase/auth';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { useState } from 'react';
 import {
@@ -72,7 +73,8 @@ export default function RegisterScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [showProgrammeModal, setShowProgrammeModal] = useState(false);
-  
+  const [showPassword, setShowPassword] = useState(false);
+
   // Form fields
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -81,19 +83,22 @@ export default function RegisterScreen() {
   const [programme, setProgramme] = useState('');
   const [studyMode, setStudyMode] = useState('');
   const [level, setLevel] = useState('');
-
   const [programmeSearch, setProgrammeSearch] = useState('');
   const [customProgramme, setCustomProgramme] = useState('');
 
+  // FIX #2: Stronger email validation — prevents subdomain bypass like fake@upsamail.edu.gh.hacker.com
   const validateEmail = (email: string) => {
-    // TODO: remove @gmail.com in production
     const allowedDomains = ['@upsamail.edu.gh', '@upsa.edu.gh', '@gmail.com'];
-    return allowedDomains.some(domain => email.endsWith(domain));
+    const trimmed = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmed)) return false;
+    return allowedDomains.some(domain => trimmed.endsWith(domain));
   };
 
+  // FIX #10: extractStudentId returns null instead of empty string for non-numeric emails
   const extractStudentId = (email: string) => {
     const match = email.match(/^(\d+)@/);
-    return match ? match[1] : '';
+    return match ? match[1] : null;
   };
 
   const getAllProgrammes = () => {
@@ -103,9 +108,8 @@ export default function RegisterScreen() {
       ...PROGRAMMES.POSTGRADUATE,
       ...PROGRAMMES.PROFESSIONAL,
     ];
-    
     if (programmeSearch) {
-      return allProgrammes.filter(p => 
+      return allProgrammes.filter(p =>
         p.toLowerCase().includes(programmeSearch.toLowerCase())
       );
     }
@@ -119,66 +123,76 @@ export default function RegisterScreen() {
     setCustomProgramme('');
   };
 
+  // FIX #9: Button disabled when form is incomplete
+  const isButtonDisabled =
+    loading ||
+    !fullName.trim() ||
+    !email.trim() ||
+    password.length < 8 ||
+    !gender ||
+    !studyMode ||
+    !level ||
+    (!programme.trim() && !customProgramme.trim());
+
   const handleSubmit = async () => {
+    // FIX #1: Race condition guard — prevent double tap
+    if (loading) return;
+
     // Validation
     if (!fullName.trim()) {
       Alert.alert('Error', 'Please enter your full name');
       return;
     }
-
     if (!email.trim()) {
       Alert.alert('Error', 'Please enter your email address');
       return;
     }
-
     if (!validateEmail(email)) {
-      Alert.alert('Error', 'Please use your UPSA email address');
+      Alert.alert('Error', 'Please use your UPSA email address (@upsamail.edu.gh or @upsa.edu.gh)');
       return;
     }
-
     if (password.length < 8) {
       Alert.alert('Error', 'Password must be at least 8 characters');
       return;
     }
-
     if (!gender) {
       Alert.alert('Error', 'Please select your gender');
       return;
     }
-
     if (!programme.trim() && !customProgramme.trim()) {
       Alert.alert('Error', 'Please select or enter your programme');
       return;
     }
-
     if (!studyMode) {
       Alert.alert('Error', 'Please select your study mode');
       return;
     }
-
     if (!level) {
       Alert.alert('Error', 'Please select your academic level');
       return;
     }
 
     setLoading(true);
+    let user = null;
+
     try {
       // Create Firebase Auth account
       const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-      const user = userCredential.user;
+      user = userCredential.user;
 
       // Send verification email
       await sendEmailVerification(user);
 
-      // Create Firestore document for user
       const finalProgramme = customProgramme.trim() || programme.trim();
-      const isAdmin = email.endsWith('@upsa.edu.gh');
-      
+      const studentId = extractStudentId(email);
+
+      // FIX #3 + #7: Role is always 'student' on signup.
+      // Admin role must be manually set in Firestore by a super-admin.
       await setDoc(doc(db, 'users', user.uid), {
         name: fullName.trim(),
-        email: email.trim(),
-        role: isAdmin ? 'admin' : 'student',
-        student_id: extractStudentId(email),
+        email: email.trim().toLowerCase(),
+        role: 'student',
+        student_id: studentId, // FIX #10: null for non-numeric emails
         gender: gender,
         programme: finalProgramme,
         study_mode: studyMode,
@@ -186,19 +200,30 @@ export default function RegisterScreen() {
         created_at: serverTimestamp(),
       });
 
-      // Navigate to verification screen
       router.push('/verify-email');
     } catch (error: any) {
+      // FIX #4: If setDoc fails after auth account created, delete the auth account
+      // to prevent broken state (auth account exists but no Firestore document)
+      if (user && error.code !== 'auth/email-already-in-use') {
+        try {
+          await deleteUser(user);
+        } catch (deleteError) {
+          console.error('Failed to clean up auth account after setDoc failure:', deleteError);
+        }
+      }
+
+      // FIX #5: Network error handling + friendly messages
       let errorMessage = 'Failed to create account. Please try again.';
-      
       if (error.code === 'auth/email-already-in-use') {
         errorMessage = 'An account with this email already exists.';
       } else if (error.code === 'auth/weak-password') {
         errorMessage = 'Password should be at least 8 characters.';
       } else if (error.code === 'auth/invalid-email') {
         errorMessage = 'Please enter a valid email address.';
+      } else if (error.code === 'auth/network-request-failed') {
+        errorMessage = 'No internet connection. Please check your network and try again.';
       }
-      
+
       Alert.alert('Signup failed', errorMessage);
     } finally {
       setLoading(false);
@@ -210,7 +235,7 @@ export default function RegisterScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
     >
-      <ScrollView 
+      <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
@@ -234,12 +259,13 @@ export default function RegisterScreen() {
 
           {/* Email */}
           <Text style={styles.label}>UPSA Email</Text>
+          {/* FIX #7: Trim email on change */}
           <TextInput
             style={styles.input}
             placeholder="your.email@upsamail.edu.gh"
             placeholderTextColor={COLORS.textSecondary}
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(text) => setEmail(text.trim().toLowerCase())}
             autoCapitalize="none"
             keyboardType="email-address"
             autoComplete="email"
@@ -247,48 +273,50 @@ export default function RegisterScreen() {
           />
 
           {/* Password */}
+          {/* FIX #8: Password visibility toggle added */}
           <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Min 8 characters"
-            placeholderTextColor={COLORS.textSecondary}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoComplete="password"
-            editable={!loading}
-          />
+          <View style={styles.passwordContainer}>
+            <TextInput
+              style={[styles.input, styles.passwordInput]}
+              placeholder="Min 8 characters"
+              placeholderTextColor={COLORS.textSecondary}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              autoComplete="password"
+              editable={!loading}
+            />
+            <TouchableOpacity
+              style={styles.eyeIcon}
+              onPress={() => setShowPassword(!showPassword)}
+              disabled={loading}
+            >
+              <Ionicons
+                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                size={20}
+                color={COLORS.textSecondary}
+              />
+            </TouchableOpacity>
+          </View>
 
           {/* Gender */}
           <Text style={styles.label}>Gender</Text>
           <View style={styles.genderContainer}>
             <TouchableOpacity
-              style={[
-                styles.genderButton,
-                gender === 'male' && styles.genderButtonSelected
-              ]}
+              style={[styles.genderButton, gender === 'male' && styles.genderButtonSelected]}
               onPress={() => setGender('male')}
               disabled={loading}
             >
-              <Text style={[
-                styles.genderButtonText,
-                gender === 'male' && styles.genderButtonTextSelected
-              ]}>
+              <Text style={[styles.genderButtonText, gender === 'male' && styles.genderButtonTextSelected]}>
                 Male
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[
-                styles.genderButton,
-                gender === 'female' && styles.genderButtonSelected
-              ]}
+              style={[styles.genderButton, gender === 'female' && styles.genderButtonSelected]}
               onPress={() => setGender('female')}
               disabled={loading}
             >
-              <Text style={[
-                styles.genderButtonText,
-                gender === 'female' && styles.genderButtonTextSelected
-              ]}>
+              <Text style={[styles.genderButtonText, gender === 'female' && styles.genderButtonTextSelected]}>
                 Female
               </Text>
             </TouchableOpacity>
@@ -301,7 +329,10 @@ export default function RegisterScreen() {
             onPress={() => setShowProgrammeModal(true)}
             disabled={loading}
           >
-            <Text style={styles.programmeButtonText}>
+            <Text style={[
+              styles.programmeButtonText,
+              !(customProgramme || programme) && { color: COLORS.textSecondary }
+            ]}>
               {customProgramme || programme || 'Select your programme'}
             </Text>
             <Text style={styles.programmeButtonArrow}>▼</Text>
@@ -313,17 +344,11 @@ export default function RegisterScreen() {
             {STUDY_MODES.map((mode) => (
               <TouchableOpacity
                 key={mode}
-                style={[
-                  styles.pill,
-                  studyMode === mode && styles.pillSelected
-                ]}
+                style={[styles.pill, studyMode === mode && styles.pillSelected]}
                 onPress={() => setStudyMode(mode)}
                 disabled={loading}
               >
-                <Text style={[
-                  styles.pillText,
-                  studyMode === mode && styles.pillTextSelected
-                ]}>
+                <Text style={[styles.pillText, studyMode === mode && styles.pillTextSelected]}>
                   {mode}
                 </Text>
               </TouchableOpacity>
@@ -336,28 +361,22 @@ export default function RegisterScreen() {
             {LEVELS.map((lvl) => (
               <TouchableOpacity
                 key={lvl}
-                style={[
-                  styles.pill,
-                  level === lvl && styles.pillSelected
-                ]}
+                style={[styles.pill, level === lvl && styles.pillSelected]}
                 onPress={() => setLevel(lvl)}
                 disabled={loading}
               >
-                <Text style={[
-                  styles.pillText,
-                  level === lvl && styles.pillTextSelected
-                ]}>
+                <Text style={[styles.pillText, level === lvl && styles.pillTextSelected]}>
                   {lvl}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* Create Account Button */}
+          {/* FIX #9: Button disabled when form incomplete */}
           <TouchableOpacity
-            style={[styles.createButton, loading && styles.buttonDisabled]}
+            style={[styles.createButton, isButtonDisabled && styles.buttonDisabled]}
             onPress={handleSubmit}
-            disabled={loading}
+            disabled={isButtonDisabled}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
@@ -366,7 +385,6 @@ export default function RegisterScreen() {
             )}
           </TouchableOpacity>
 
-          {/* Back to Login */}
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => router.push('/login')}
@@ -384,105 +402,87 @@ export default function RegisterScreen() {
         presentationStyle="pageSheet"
         onRequestClose={() => setShowProgrammeModal(false)}
       >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Select Programme</Text>
-            <TouchableOpacity onPress={() => setShowProgrammeModal(false)}>
-              <Text style={styles.modalClose}>✕</Text>
-            </TouchableOpacity>
+        {/* FIX #6: KeyboardAvoidingView inside modal so keyboard doesn't cover input */}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Programme</Text>
+              <TouchableOpacity onPress={() => setShowProgrammeModal(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search programmes..."
+              placeholderTextColor={COLORS.textSecondary}
+              value={programmeSearch}
+              onChangeText={setProgrammeSearch}
+            />
+
+            <ScrollView style={styles.programmeList}>
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>DIPLOMA</Text>
+                {PROGRAMMES.DIPLOMA.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
+                  <TouchableOpacity key={prog} style={styles.programmeItem} onPress={() => handleProgrammeSelect(prog)}>
+                    <Text style={styles.programmeItemText}>{prog}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>UNDERGRADUATE</Text>
+                {PROGRAMMES.UNDERGRADUATE.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
+                  <TouchableOpacity key={prog} style={styles.programmeItem} onPress={() => handleProgrammeSelect(prog)}>
+                    <Text style={styles.programmeItemText}>{prog}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>POSTGRADUATE</Text>
+                {PROGRAMMES.POSTGRADUATE.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
+                  <TouchableOpacity key={prog} style={styles.programmeItem} onPress={() => handleProgrammeSelect(prog)}>
+                    <Text style={styles.programmeItemText}>{prog}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>PROFESSIONAL</Text>
+                {PROGRAMMES.PROFESSIONAL.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
+                  <TouchableOpacity key={prog} style={styles.programmeItem} onPress={() => handleProgrammeSelect(prog)}>
+                    <Text style={styles.programmeItemText}>{prog}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TouchableOpacity
+                style={styles.programmeItem}
+                onPress={() => handleProgrammeSelect('')}
+              >
+                <Text style={styles.programmeItemText}>Other (type yours)</Text>
+              </TouchableOpacity>
+            </ScrollView>
+
+            {!programme && (
+              <View style={styles.customProgrammeContainer}>
+                <Text style={styles.label}>Enter Custom Programme</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter your programme name"
+                  placeholderTextColor={COLORS.textSecondary}
+                  value={customProgramme}
+                  onChangeText={setCustomProgramme}
+                  autoCapitalize="words"
+                />
+              </View>
+            )}
           </View>
-
-          {/* Search */}
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search programmes..."
-            placeholderTextColor={COLORS.textSecondary}
-            value={programmeSearch}
-            onChangeText={setProgrammeSearch}
-          />
-
-          {/* Programme List */}
-          <ScrollView style={styles.programmeList}>
-            {/* DIPLOMA Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>DIPLOMA</Text>
-              {PROGRAMMES.DIPLOMA.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
-                <TouchableOpacity
-                  key={prog}
-                  style={styles.programmeItem}
-                  onPress={() => handleProgrammeSelect(prog)}
-                >
-                  <Text style={styles.programmeItemText}>{prog}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {/* UNDERGRADUATE Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>UNDERGRADUATE</Text>
-              {PROGRAMMES.UNDERGRADUATE.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
-                <TouchableOpacity
-                  key={prog}
-                  style={styles.programmeItem}
-                  onPress={() => handleProgrammeSelect(prog)}
-                >
-                  <Text style={styles.programmeItemText}>{prog}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {/* POSTGRADUATE Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>POSTGRADUATE</Text>
-              {PROGRAMMES.POSTGRADUATE.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
-                <TouchableOpacity
-                  key={prog}
-                  style={styles.programmeItem}
-                  onPress={() => handleProgrammeSelect(prog)}
-                >
-                  <Text style={styles.programmeItemText}>{prog}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {/* PROFESSIONAL Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>PROFESSIONAL</Text>
-              {PROGRAMMES.PROFESSIONAL.filter(p => !programmeSearch || p.toLowerCase().includes(programmeSearch.toLowerCase())).map((prog) => (
-                <TouchableOpacity
-                  key={prog}
-                  style={styles.programmeItem}
-                  onPress={() => handleProgrammeSelect(prog)}
-                >
-                  <Text style={styles.programmeItemText}>{prog}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            
-            {/* Custom Programme Option */}
-            <TouchableOpacity
-              style={styles.programmeItem}
-              onPress={() => handleProgrammeSelect('')}
-            >
-              <Text style={styles.programmeItemText}>Other (type yours)</Text>
-            </TouchableOpacity>
-          </ScrollView>
-
-          {/* Custom Programme Input */}
-          {!programme && (
-            <View style={styles.customProgrammeContainer}>
-              <Text style={styles.label}>Enter Custom Programme</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your programme name"
-                placeholderTextColor={COLORS.textSecondary}
-                value={customProgramme}
-                onChangeText={setCustomProgramme}
-                autoCapitalize="words"
-              />
-            </View>
-          )}
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </KeyboardAvoidingView>
   );
@@ -531,6 +531,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.text,
     backgroundColor: COLORS.surface,
+  },
+  passwordContainer: {
+    position: 'relative',
+    width: '100%',
+  },
+  passwordInput: {
+    paddingRight: 48,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 16,
+    top: 14,
   },
   genderContainer: {
     flexDirection: 'row',
@@ -620,7 +632,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   buttonDisabled: {
-    opacity: 0.7,
+    opacity: 0.5,
   },
   backButton: {
     alignItems: 'center',

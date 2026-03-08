@@ -2,30 +2,46 @@ import { COLORS, RADIUS, SPACING } from '@/constants/theme';
 import { auth } from '@/lib/firebase';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { reload, sendEmailVerification, signOut } from 'firebase/auth';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 export default function VerifyEmailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const email = params.email as string || '';
-  
+
+  // FIX #1: Fallback to auth.currentUser?.email if param not passed from register
+  const email = (params.email as string) || auth.currentUser?.email || '';
+
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
   const [verified, setVerified] = useState(false);
 
+  // FIX #5: Auto-polling interval ref so we can clear it on unmount
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     checkEmailVerification();
+
+    // FIX #5: Auto-poll every 5 seconds to check if user verified
+    pollingRef.current = setInterval(() => {
+      checkEmailVerification(true);
+    }, 5000);
+
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
   }, []);
 
-  const checkEmailVerification = async () => {
+  // silent = true means don't show loading spinner (used for background polling)
+  const checkEmailVerification = async (silent = false) => {
     try {
       const user = auth.currentUser;
       if (!user) {
@@ -33,23 +49,39 @@ export default function VerifyEmailScreen() {
         return;
       }
 
+      if (!silent) setChecking(true);
+
       // Reload user to get latest email verification status
       await reload(user);
-      
+
       if (user.emailVerified) {
         setVerified(true);
-        setChecking(false);
+        // Stop polling once verified
+        if (pollingRef.current) clearInterval(pollingRef.current);
       } else {
         setVerified(false);
-        setChecking(false);
       }
-    } catch (error) {
-      console.error('Error checking email verification:', error);
-      setChecking(false);
+    } catch (error: any) {
+      // FIX #4: Show message if reload fails due to no internet
+      if (!silent) {
+        if (error.code === 'auth/network-request-failed') {
+          Alert.alert(
+            'No Internet',
+            'Could not check verification status. Please check your connection.'
+          );
+        } else {
+          console.error('Error checking email verification:', error);
+        }
+      }
+    } finally {
+      if (!silent) setChecking(false);
     }
   };
 
   const handleResendVerification = async () => {
+    // FIX #2: Spam guard
+    if (loading) return;
+
     try {
       setLoading(true);
       const user = auth.currentUser;
@@ -62,11 +94,19 @@ export default function VerifyEmailScreen() {
         );
       }
     } catch (error: any) {
-      Alert.alert(
-        'Error',
-        'Failed to resend verification email. Please try again.',
-        [{ text: 'OK' }]
-      );
+      // FIX #3: Handle rate limit specifically
+      if (error.code === 'auth/too-many-requests') {
+        Alert.alert(
+          'Too Many Requests',
+          'Please wait a few minutes before requesting another verification email.'
+        );
+      } else {
+        Alert.alert(
+          'Error',
+          'Failed to resend verification email. Please try again.',
+          [{ text: 'OK' }]
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -78,10 +118,12 @@ export default function VerifyEmailScreen() {
 
   const handleBackToLogin = async () => {
     try {
+      if (pollingRef.current) clearInterval(pollingRef.current);
       await signOut(auth);
-      router.replace('/login');
     } catch (error) {
       console.error('Error signing out:', error);
+    } finally {
+      // FIX: Always navigate even if signOut fails
       router.replace('/login');
     }
   };
@@ -98,19 +140,24 @@ export default function VerifyEmailScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    // FIX #6: ScrollView prevents content clipping on small screens
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.content}>
         <View style={styles.iconContainer}>
           <Text style={styles.icon}>✉</Text>
         </View>
-        
+
         <Text style={styles.title}>Verify Your Email</Text>
-        
+
         <Text style={styles.message}>
           We sent a verification link to{' '}
           <Text style={styles.emailText}>{email}</Text>
         </Text>
-        
+
         <Text style={styles.instruction}>
           Check your inbox and click the link to verify your account.
         </Text>
@@ -122,9 +169,7 @@ export default function VerifyEmailScreen() {
           </View>
         ) : (
           <View style={styles.statusContainer}>
-            <Text style={styles.statusText}>
-              Status: Awaiting verification
-            </Text>
+            <Text style={styles.statusText}>Status: Awaiting verification</Text>
           </View>
         )}
 
@@ -149,10 +194,10 @@ export default function VerifyEmailScreen() {
                   <Text style={styles.primaryButtonText}>Resend Verification Email</Text>
                 )}
               </TouchableOpacity>
-              
+
               <TouchableOpacity
                 style={styles.secondaryButton}
-                onPress={checkEmailVerification}
+                onPress={() => checkEmailVerification()}
               >
                 <Text style={styles.secondaryButtonText}>I've Verified My Email</Text>
               </TouchableOpacity>
@@ -167,7 +212,7 @@ export default function VerifyEmailScreen() {
           <Text style={styles.backButtonText}>Back to Login</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -175,6 +220,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
   content: {
     flex: 1,

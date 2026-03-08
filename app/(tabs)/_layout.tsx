@@ -20,7 +20,6 @@ export default function TabsLayout() {
   }, [isAuthenticated, isLoading, router]);
 
   useEffect(() => {
-    // Register for push notifications and set up listeners
     if (isAuthenticated) {
       registerForPushNotifications();
 
@@ -32,9 +31,11 @@ export default function TabsLayout() {
         console.log('Notification tapped:', response);
       });
 
+      // FIX: Use .remove() instead of Notifications.removeNotificationSubscription()
+      // which no longer exists in newer expo-notifications versions
       return () => {
-        Notifications.removeNotificationSubscription(notificationListener);
-        Notifications.removeNotificationSubscription(responseListener);
+        notificationListener.remove();
+        responseListener.remove();
       };
     }
   }, [isAuthenticated]);
@@ -46,15 +47,12 @@ export default function TabsLayout() {
         headerTintColor: '#fff',
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: COLORS.textSecondary,
-
         tabBarStyle: {
           height: 60,
         },
-
         tabBarItemStyle: {
           flex: 1,
         },
-
         tabBarLabelStyle: {
           fontSize: 11,
         },
