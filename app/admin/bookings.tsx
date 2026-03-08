@@ -1,7 +1,8 @@
 import { db } from '@/lib/firebase';
+import { sendPushNotification } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { collection, doc, getDocs, updateDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 
@@ -55,6 +56,21 @@ export default function AdminBookings() {
       await updateDoc(doc(db, 'bookings', booking.id), {
         status: 'confirmed'
       });
+      
+      // Fetch user's push token and send notification
+      const userDoc = await getDoc(doc(db, 'users', booking.user_id));
+      if (userDoc.exists()) {
+        const pushToken = userDoc.data().push_token;
+        if (pushToken) {
+          await sendPushNotification(
+            pushToken,
+            '🏠 Booking Confirmed',
+            `Your room ${booking.room_number} in ${booking.hostel_name} has been confirmed!`,
+            { type: 'booking' }
+          );
+        }
+      }
+      
       setBookings(bookings.map(b => 
         b.id === booking.id ? { ...b, status: 'confirmed' } : b
       ));
@@ -79,6 +95,21 @@ export default function AdminBookings() {
               await updateDoc(doc(db, 'bookings', booking.id), {
                 status: 'cancelled'
               });
+              
+              // Fetch user's push token and send notification
+              const userDoc = await getDoc(doc(db, 'users', booking.user_id));
+              if (userDoc.exists()) {
+                const pushToken = userDoc.data().push_token;
+                if (pushToken) {
+                  await sendPushNotification(
+                    pushToken,
+                    '❌ Booking Cancelled',
+                    'Your hostel booking has been cancelled. Please contact admin for more info.',
+                    { type: 'booking' }
+                  );
+                }
+              }
+              
               setBookings(bookings.map(b => 
                 b.id === booking.id ? { ...b, status: 'cancelled' } : b
               ));

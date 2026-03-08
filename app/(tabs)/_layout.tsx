@@ -1,6 +1,8 @@
 import { COLORS } from '@/constants/theme';
 import { useAuth, useUserRole } from '@/lib/auth-context';
+import { registerForPushNotifications } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 import { Tabs, useRouter } from 'expo-router';
 import { useEffect } from 'react';
 
@@ -16,6 +18,26 @@ export default function TabsLayout() {
       router.replace('/login');
     }
   }, [isAuthenticated, isLoading, router]);
+
+  useEffect(() => {
+    // Register for push notifications and set up listeners
+    if (isAuthenticated) {
+      registerForPushNotifications();
+
+      const notificationListener = Notifications.addNotificationReceivedListener(notification => {
+        console.log('Notification received:', notification);
+      });
+
+      const responseListener = Notifications.addNotificationResponseReceivedListener(response => {
+        console.log('Notification tapped:', response);
+      });
+
+      return () => {
+        Notifications.removeNotificationSubscription(notificationListener);
+        Notifications.removeNotificationSubscription(responseListener);
+      };
+    }
+  }, [isAuthenticated]);
 
   return (
     <Tabs

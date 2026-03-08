@@ -1,9 +1,10 @@
+import { db } from '@/lib/firebase';
+import { sendNotificationToAll } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { auth, db } from '@/lib/firebase';
 
 type Announcement = {
   id: string;
@@ -96,6 +97,14 @@ export default function AdminAnnouncements() {
           created_at: serverTimestamp(),
           is_active: true
         });
+        
+        // Send push notification to all users
+        await sendNotificationToAll(
+          '📢 New Announcement',
+          formData.title,
+          { type: 'announcement' }
+        );
+        
         Alert.alert('Success', 'Announcement created successfully!');
       }
 

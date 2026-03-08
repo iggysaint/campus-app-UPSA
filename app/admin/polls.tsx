@@ -1,4 +1,5 @@
 import { db } from '@/lib/firebase';
+import { sendNotificationToAll } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
@@ -194,6 +195,14 @@ export default function AdminPolls() {
           end_date: parsedEndDate,
           created_at: serverTimestamp()
         });
+        
+        // Send push notification to all users
+        await sendNotificationToAll(
+          '🗳️ New Poll',
+          formData.question,
+          { type: 'poll' }
+        );
+        
         Alert.alert('Success', 'Poll created successfully!');
       }
 

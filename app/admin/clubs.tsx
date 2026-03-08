@@ -1,3 +1,4 @@
+import { sendNotificationToAll } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
@@ -93,6 +94,14 @@ export default function AdminClubs() {
           image_url: formData.image_url.trim(),
           created_at: serverTimestamp()
         });
+        
+        // Send push notification to all users
+        await sendNotificationToAll(
+          '🎉 New Club',
+          `${formData.name} has been added!`,
+          { type: 'club' }
+        );
+        
         Alert.alert('Success', 'Club created successfully!');
       }
 
