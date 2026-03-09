@@ -1,6 +1,7 @@
 import { RADIUS, SPACING } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { auth, db } from '@/lib/firebase';
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { deleteUser, EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
@@ -16,7 +17,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 
 interface UserProfile {
@@ -38,21 +39,16 @@ interface AppSettings {
 export default function ProfileScreen() {
   const { signOut } = useAuth();
   const router = useRouter();
-
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-
   const [showNotificationsModal, setShowNotificationsModal] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-
   const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
-
   const [sendingSupport, setSendingSupport] = useState(false);
   const [supportMessage, setSupportMessage] = useState('');
-
   const [appSettings, setAppSettings] = useState<AppSettings>({
     darkMode: false,
     notifications: true,
@@ -60,17 +56,16 @@ export default function ProfileScreen() {
 
   const fetchUserProfile = useCallback(async () => {
     try {
-      if (!auth.currentUser) return;
-
-      const userRef = doc(db, 'users', auth.currentUser.uid);
-      const snap = await getDoc(userRef);
-
-      if (!snap.exists()) {
-        console.log('User document missing');
-        return;
+      // FIX 6: Safer uid check — guards against logout-during-fetch race condition
+      if (!auth.currentUser?.uid) return;
+      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      if (userDoc.exists()) {
+        // FIX 4: Guard against unexpected undefined data from Firestore
+        const data = userDoc.data();
+        if (data) {
+          setUserProfile(data as UserProfile);
+        }
       }
-
-      setUserProfile(snap.data() as UserProfile);
     } catch (e) {
       console.log('fetchUserProfile error:', e);
     } finally {
@@ -82,7 +77,6 @@ export default function ProfileScreen() {
     try {
       const darkMode = await AsyncStorage.getItem('darkMode');
       const notifications = await AsyncStorage.getItem('notifications');
-
       setAppSettings({
         darkMode: darkMode === 'true',
         notifications: notifications !== 'false',
@@ -116,30 +110,24 @@ export default function ProfileScreen() {
   };
 
   const sendSupportMessage = async () => {
+    // FIX 3: Double-send guard (confirmed correct)
     if (sendingSupport) return;
-
-    const message = supportMessage.trim();
-
-    if (!message) {
+    if (!supportMessage.trim()) {
       Alert.alert('Error', 'Please enter a message');
       return;
     }
-
     if (!auth.currentUser) return;
 
     setSendingSupport(true);
-
     try {
       await addDoc(collection(db, 'support_messages'), {
         user_id: auth.currentUser.uid,
-        message,
+        message: supportMessage.trim(),
         created_at: serverTimestamp(),
       });
-
       setSupportMessage('');
       setShowSupportModal(false);
-
-      Alert.alert('Success', 'Your message has been sent to support.');
+      Alert.alert('Success', 'Your message has been sent to the support team');
     } catch (e) {
       console.log('sendSupportMessage error:', e);
       Alert.alert('Error', 'Failed to send message');
@@ -151,67 +139,41 @@ export default function ProfileScreen() {
   const confirmDeleteAccount = async () => {
     if (deleting) return;
 
-    const password = deletePassword.trim();
-
-    if (!password) {
+    // FIX 5: Trim whitespace — prevents "   " passing as a valid password
+    if (!deletePassword.trim()) {
       Alert.alert('Error', 'Please enter your password');
       return;
     }
 
-    if (!auth.currentUser || !auth.currentUser.email) return;
+    if (!auth.currentUser) return;
+
+    // FIX 1: Guard against null email before creating Firebase credential
+    if (!auth.currentUser.email) {
+      Alert.alert('Error', 'Account email not found.');
+      setDeleting(false);
+      return;
+    }
 
     setDeleting(true);
-
     try {
       const credential = EmailAuthProvider.credential(
         auth.currentUser.email,
-        password
+        deletePassword
       );
-
       await reauthenticateWithCredential(auth.currentUser, credential);
-
       await deleteDoc(doc(db, 'users', auth.currentUser.uid));
-
       await deleteUser(auth.currentUser);
-
       router.replace('/login');
-
     } catch (error: any) {
-
       if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-        Alert.alert('Error', 'Incorrect password.');
+        Alert.alert('Error', 'Incorrect password. Please try again.');
       } else {
-        console.log('deleteAccount error:', error);
         Alert.alert('Error', 'Failed to delete account. Please try again.');
       }
-
     } finally {
       setDeleting(false);
       setDeletePassword('');
-      setShowDeleteModal(false);
     }
-  };
-
-  const handleSignOut = () => {
-    Alert.alert(
-      'Log Out',
-      'Are you sure you want to log out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log Out',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await signOut();
-              router.replace('/login');
-            } catch (e) {
-              console.log('signOut error:', e);
-            }
-          },
-        },
-      ]
-    );
   };
 
   const deleteAccount = () => {
@@ -229,12 +191,34 @@ export default function ProfileScreen() {
     );
   };
 
-  const getInitials = (name?: string) => {
-    if (!name) return 'U';
+  const handleSignOut = () => {
+    Alert.alert(
+      'Log Out',
+      'Are you sure you want to log out?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Log Out',
+          style: 'destructive',
+          // FIX 2: Wrap signOut in try/catch — prevents crash if network fails
+          onPress: async () => {
+            try {
+              await signOut();
+              router.replace('/login');
+            } catch (e) {
+              Alert.alert('Error', 'Failed to log out.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
+  const getInitials = (name: string | null | undefined) => {
+    if (!name) return 'U';
     return name
       .split(' ')
-      .map(w => w.charAt(0).toUpperCase())
+      .map(word => word.charAt(0).toUpperCase())
       .join('')
       .substring(0, 2);
   };
@@ -251,18 +235,17 @@ export default function ProfileScreen() {
 
   return (
     <View style={styles.container}>
-
-      <ScrollView showsVerticalScrollIndicator={false}>
-
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        {/* Profile Header */}
         <View style={styles.profileHeader}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{getInitials(userProfile?.name)}</Text>
+            <Text style={styles.avatarText}>
+              {getInitials(userProfile?.name)}
+            </Text>
           </View>
-
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>{userProfile?.name ?? 'User'}</Text>
-            <Text style={styles.userEmail}>{userProfile?.email ?? ''}</Text>
-
+            <Text style={styles.userName}>{userProfile?.name || 'User'}</Text>
+            <Text style={styles.userEmail}>{userProfile?.email || ''}</Text>
             <View style={[
               styles.roleBadge,
               userProfile?.role === 'admin' ? styles.adminBadge : styles.studentBadge,
@@ -274,118 +257,290 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        <View style={styles.section}>
-
-          <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/(tabs)/hostel')}>
-            <Text style={styles.actionText}>Hostel Booking</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/(tabs)/polls')}>
-            <Text style={styles.actionText}>Voting & Polls</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.actionCard} onPress={() => setShowNotificationsModal(true)}>
-            <Text style={styles.actionText}>Notifications</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.actionCard} onPress={() => setShowSupportModal(true)}>
-            <Text style={styles.actionText}>Help & Support</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.actionCard} onPress={handleSignOut}>
-            <Text style={{ color: '#FF4444', fontWeight: '600' }}>Log Out</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.deleteAccountCard} onPress={deleteAccount}>
-            <Text style={{ color: '#DC2626', fontWeight: '600' }}>Delete Account</Text>
-          </TouchableOpacity>
-
+        {/* Info Card */}
+        <View style={styles.infoCard}>
+          {[
+            { icon: 'school-outline', label: 'Programme', value: userProfile?.programme },
+            { icon: 'layers-outline', label: 'Level', value: userProfile?.level },
+            { icon: 'card-outline', label: 'Student ID', value: userProfile?.student_id },
+            { icon: 'person-outline', label: 'Gender', value: userProfile?.gender },
+            { icon: 'time-outline', label: 'Study Mode', value: userProfile?.study_mode },
+          ].map((item, i) => (
+            <View key={i} style={styles.infoRow}>
+              <View style={styles.infoIcon}>
+                <Ionicons name={item.icon as any} size={20} color="#0088CC" />
+              </View>
+              <View style={styles.infoTextContainer}>
+                <Text style={styles.infoLabel}>{item.label}</Text>
+                <Text style={styles.infoValue}>{item.value || 'Not specified'}</Text>
+              </View>
+            </View>
+          ))}
         </View>
 
+        {/* Administration Section */}
+        {userProfile?.role === 'admin' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionHeader}>ADMINISTRATION</Text>
+            <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/admin')}>
+              <View style={styles.actionIcon}>
+                <Ionicons name="shield-checkmark-outline" size={20} color="#0088CC" />
+              </View>
+              <Text style={styles.actionText}>Admin Dashboard</Text>
+              <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={styles.chevron} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Quick Actions */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>QUICK ACTIONS</Text>
+          <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/(tabs)/hostel')}>
+            <View style={styles.actionIcon}>
+              <Ionicons name="home-outline" size={20} color="#0088CC" />
+            </View>
+            <Text style={styles.actionText}>Hostel Booking</Text>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={styles.chevron} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/(tabs)/polls')}>
+            <View style={styles.actionIcon}>
+              <Ionicons name="stats-chart-outline" size={20} color="#0088CC" />
+            </View>
+            <Text style={styles.actionText}>Voting & Polls</Text>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={styles.chevron} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Settings */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeader}>SETTINGS</Text>
+          <TouchableOpacity style={styles.actionCard} onPress={() => setShowNotificationsModal(true)}>
+            <View style={styles.actionIcon}>
+              <Ionicons name="notifications-outline" size={20} color="#0088CC" />
+            </View>
+            <Text style={styles.actionText}>Notifications</Text>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={styles.chevron} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionCard} onPress={() => setShowPrivacyModal(true)}>
+            <View style={styles.actionIcon}>
+              <Ionicons name="shield-outline" size={20} color="#0088CC" />
+            </View>
+            <Text style={styles.actionText}>Privacy & Security</Text>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={styles.chevron} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionCard} onPress={() => setShowSupportModal(true)}>
+            <View style={styles.actionIcon}>
+              <Ionicons name="help-circle-outline" size={20} color="#0088CC" />
+            </View>
+            <Text style={styles.actionText}>Help & Support</Text>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={styles.chevron} />
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.actionCard, styles.logoutCard]} onPress={handleSignOut}>
+            <View style={[styles.actionIcon, styles.logoutIcon]}>
+              <Ionicons name="log-out-outline" size={20} color="#FF4444" />
+            </View>
+            <Text style={styles.logoutText}>Log Out</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.actionCard, styles.deleteAccountCard]} onPress={deleteAccount}>
+            <View style={[styles.actionIcon, styles.deleteAccountIcon]}>
+              <Ionicons name="trash-outline" size={20} color="#DC2626" />
+            </View>
+            <Text style={styles.deleteAccountText}>Delete Account</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.footer}>Campus App UPSA v1.0.0</Text>
       </ScrollView>
 
-      <Modal visible={showNotificationsModal} animationType="slide">
+      {/* Notifications Modal */}
+      <Modal
+        visible={showNotificationsModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowNotificationsModal(false)}
+      >
         <View style={styles.modalContainer}>
-          <View style={styles.settingRow}>
-            <Text>Enable Notifications</Text>
-            <Switch
-              value={appSettings.notifications}
-              onValueChange={toggleNotifications}
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Notifications</Text>
+            <TouchableOpacity onPress={() => setShowNotificationsModal(false)}>
+              <Ionicons name="close" size={24} color="#666" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.modalContent}>
+            <View style={styles.settingRow}>
+              <Text style={styles.settingText}>Enable Notifications</Text>
+              <Switch
+                value={appSettings.notifications}
+                onValueChange={toggleNotifications}
+                trackColor={{ false: '#E0E0E0', true: '#0088CC' }}
+                thumbColor="#fff"
+              />
+            </View>
+          </View>
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              style={[styles.modalButton, styles.saveButton]}
+              onPress={() => setShowNotificationsModal(false)}
+            >
+              <Text style={styles.saveButtonText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Privacy Modal */}
+      <Modal
+        visible={showPrivacyModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowPrivacyModal(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Privacy & Security</Text>
+            <TouchableOpacity onPress={() => setShowPrivacyModal(false)}>
+              <Ionicons name="close" size={24} color="#666" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.modalContent}>
+            <Text style={styles.privacyText}>
+              Your data is secure and encrypted. We use industry-standard security measures to
+              protect your personal information and ensure your privacy is maintained at all times.
+            </Text>
+          </View>
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              style={[styles.modalButton, styles.saveButton]}
+              onPress={() => setShowPrivacyModal(false)}
+            >
+              <Text style={styles.saveButtonText}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Support Modal */}
+      <Modal
+        visible={showSupportModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowSupportModal(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Help & Support</Text>
+            <TouchableOpacity onPress={() => setShowSupportModal(false)}>
+              <Ionicons name="close" size={24} color="#666" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.modalContent}>
+            <Text style={styles.inputLabel}>Message</Text>
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              value={supportMessage}
+              onChangeText={(text) => setSupportMessage(text.trimStart())}
+              placeholder="Describe your issue or question..."
+              multiline
+              numberOfLines={6}
+              textAlignVertical="top"
+              maxLength={500}
+              editable={!sendingSupport}
             />
           </View>
-
-          <TouchableOpacity onPress={() => setShowNotificationsModal(false)}>
-            <Text style={{ textAlign: 'center', marginTop: 40 }}>Done</Text>
-          </TouchableOpacity>
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              style={[styles.modalButton, styles.cancelButton]}
+              onPress={() => setShowSupportModal(false)}
+              disabled={sendingSupport}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modalButton, styles.saveButton, sendingSupport && { opacity: 0.6 }]}
+              onPress={sendSupportMessage}
+              disabled={sendingSupport}
+            >
+              <Text style={styles.saveButtonText}>
+                {sendingSupport ? 'Sending...' : 'Send'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 
-      <Modal visible={showSupportModal} animationType="slide">
+      {/* Delete Account Modal */}
+      <Modal
+        visible={showDeleteModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setShowDeleteModal(false);
+          setDeletePassword('');
+        }}
+      >
         <View style={styles.modalContainer}>
-
-          <TextInput
-            style={[styles.input, styles.textArea]}
-            value={supportMessage}
-            onChangeText={setSupportMessage}
-            placeholder="Describe your issue..."
-            multiline
-            maxLength={500}
-          />
-
-          <TouchableOpacity
-            onPress={sendSupportMessage}
-            disabled={sendingSupport}
-            style={[styles.saveButton, sendingSupport && { opacity: 0.6 }]}
-          >
-            <Text style={{ color: '#fff' }}>
-              {sendingSupport ? 'Sending...' : 'Send'}
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Delete Account</Text>
+            <TouchableOpacity onPress={() => {
+              setShowDeleteModal(false);
+              setDeletePassword('');
+            }}>
+              <Ionicons name="close" size={24} color="#666" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.modalContent}>
+            <Text style={styles.privacyText}>
+              This will permanently delete your account and all your data. This cannot be undone.
             </Text>
-          </TouchableOpacity>
-
+            <Text style={[styles.inputLabel, { marginTop: 20 }]}>Enter your password to confirm</Text>
+            <TextInput
+              style={styles.input}
+              value={deletePassword}
+              onChangeText={setDeletePassword}
+              placeholder="Your password"
+              secureTextEntry
+              autoCapitalize="none"
+              editable={!deleting}
+            />
+          </View>
+          <View style={styles.modalFooter}>
+            <TouchableOpacity
+              style={[styles.modalButton, styles.cancelButton]}
+              onPress={() => {
+                setShowDeleteModal(false);
+                setDeletePassword('');
+              }}
+              disabled={deleting}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modalButton, { backgroundColor: '#DC2626' }, deleting && { opacity: 0.6 }]}
+              onPress={confirmDeleteAccount}
+              disabled={deleting}
+            >
+              <Text style={styles.saveButtonText}>
+                {deleting ? 'Deleting...' : 'Delete'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
-
-      <Modal visible={showDeleteModal} animationType="slide">
-        <View style={styles.modalContainer}>
-
-          <TextInput
-            style={styles.input}
-            value={deletePassword}
-            onChangeText={setDeletePassword}
-            placeholder="Enter password"
-            secureTextEntry
-          />
-
-          <TouchableOpacity
-            onPress={confirmDeleteAccount}
-            disabled={deleting}
-            style={[styles.deleteButton, deleting && { opacity: 0.6 }]}
-          >
-            <Text style={{ color: '#fff' }}>
-              {deleting ? 'Deleting...' : 'Delete Account'}
-            </Text>
-          </TouchableOpacity>
-
-        </View>
-      </Modal>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-
   container: { flex: 1, backgroundColor: '#F5F5F5' },
-
+  scrollView: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-
   profileHeader: {
     backgroundColor: '#fff',
     flexDirection: 'row',
-    padding: SPACING.md,
     alignItems: 'center',
+    padding: SPACING.md,
+    marginBottom: SPACING.sm,
   },
-
   avatar: {
     width: 70,
     height: 70,
@@ -395,83 +550,118 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: SPACING.md,
   },
-
-  avatarText: { color: '#fff', fontSize: 20, fontWeight: '700' },
-
+  avatarText: { fontSize: 20, fontWeight: '700', color: '#fff' },
   userInfo: { flex: 1 },
-
-  userName: { fontSize: 16, fontWeight: '700' },
-
-  userEmail: { fontSize: 12, color: '#666' },
-
+  userName: { fontSize: 16, fontWeight: '700', color: '#000', marginBottom: 2 },
+  userEmail: { fontSize: 12, color: '#666', marginBottom: SPACING.xs },
   roleBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    marginTop: 6,
-    alignSelf: 'flex-start'
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: RADIUS.sm,
+    alignSelf: 'flex-start',
   },
-
   adminBadge: { backgroundColor: '#FF4444' },
-
   studentBadge: { backgroundColor: '#0088CC' },
-
-  roleText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-
-  section: { padding: SPACING.md },
-
+  roleText: { fontSize: 12, fontWeight: '600', color: '#fff' },
+  infoCard: {
+    backgroundColor: '#fff',
+    margin: SPACING.md,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  infoRow: { flexDirection: 'row', alignItems: 'center', marginBottom: SPACING.md },
+  infoIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#EAF5FD',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: SPACING.md,
+  },
+  infoTextContainer: { flex: 1 },
+  infoLabel: { fontSize: 12, color: '#666', marginBottom: 2 },
+  infoValue: { fontSize: 14, color: '#000', fontWeight: '600' },
+  section: { marginTop: SPACING.sm, paddingHorizontal: SPACING.md },
+  sectionHeader: { fontSize: 12, fontWeight: '600', color: '#666', marginBottom: SPACING.sm },
   actionCard: {
     backgroundColor: '#fff',
+    flexDirection: 'row',
+    alignItems: 'center',
     padding: SPACING.md,
-    borderRadius: RADIUS.md,
     marginBottom: SPACING.sm,
-  },
-
-  actionText: { fontSize: 16 },
-
-  deleteAccountCard: {
-    backgroundColor: '#FEE2E2',
-    padding: SPACING.md,
     borderRadius: RADIUS.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
-
-  modalContainer: {
-    flex: 1,
-    padding: SPACING.lg,
+  actionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#EAF5FD',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: SPACING.md,
+  },
+  actionText: { fontSize: 16, color: '#000', fontWeight: '500', flex: 1 },
+  chevron: { marginLeft: 'auto' },
+  logoutCard: { backgroundColor: '#FDEAEA' },
+  logoutIcon: { backgroundColor: '#FDEAEA' },
+  logoutText: { fontSize: 16, fontWeight: '500', color: '#FF4444', flex: 1 },
+  deleteAccountCard: { backgroundColor: '#FEE2E2' },
+  deleteAccountIcon: { backgroundColor: '#FEE2E2' },
+  deleteAccountText: { color: '#DC2626', fontSize: 16, fontWeight: '500', flex: 1 },
+  footer: { fontSize: 12, color: '#999', textAlign: 'center', padding: SPACING.lg, marginTop: SPACING.md },
+  modalContainer: { flex: 1, backgroundColor: '#fff' },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.lg,
+    paddingTop: 60,
+    paddingBottom: SPACING.md,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  modalTitle: { fontSize: 18, fontWeight: '600', color: '#000' },
+  modalContent: { flex: 1, padding: SPACING.lg },
+  inputLabel: { fontSize: 16, fontWeight: '600', color: '#000', marginBottom: SPACING.sm },
+  input: {
+    height: 48,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: RADIUS.sm,
+    paddingHorizontal: SPACING.md,
+    fontSize: 16,
+    color: '#000',
     backgroundColor: '#fff',
   },
-
+  textArea: { height: 120, textAlignVertical: 'top' },
   settingRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center'
+    alignItems: 'center',
+    paddingVertical: SPACING.md,
   },
-
-  input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: RADIUS.sm,
-    padding: 12,
-    marginBottom: 20,
+  settingText: { fontSize: 16, color: '#000' },
+  privacyText: { fontSize: 16, color: '#666', lineHeight: 24 },
+  modalFooter: {
+    flexDirection: 'row',
+    paddingHorizontal: SPACING.lg,
+    paddingBottom: SPACING.xl,
+    gap: SPACING.md,
   },
-
-  textArea: {
-    height: 120,
-    textAlignVertical: 'top'
-  },
-
-  saveButton: {
-    backgroundColor: '#0088CC',
-    padding: 14,
-    borderRadius: RADIUS.sm,
-    alignItems: 'center'
-  },
-
-  deleteButton: {
-    backgroundColor: '#DC2626',
-    padding: 14,
-    borderRadius: RADIUS.sm,
-    alignItems: 'center'
-  }
-
+  modalButton: { flex: 1, height: 48, borderRadius: RADIUS.sm, justifyContent: 'center', alignItems: 'center' },
+  cancelButton: { backgroundColor: '#F0F0F0', borderWidth: 1, borderColor: '#E0E0E0' },
+  cancelButtonText: { fontSize: 16, fontWeight: '600', color: '#666' },
+  saveButton: { backgroundColor: '#0088CC' },
+  saveButtonText: { fontSize: 16, fontWeight: '600', color: '#fff' },
 });
