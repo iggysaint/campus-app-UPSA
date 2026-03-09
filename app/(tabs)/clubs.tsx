@@ -1,7 +1,8 @@
 import { COLORS, SPACING } from '@/constants/theme';
 import { db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, getDocs, orderBy, query } from 'firebase/firestore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -29,10 +30,28 @@ interface Club {
 
 const CATEGORY_FILTERS = ['All', 'Academic', 'Sports', 'Cultural', 'Professional', 'Social'];
 
-// Moved outside component — not recreated every render
+// FIX: constant key to prevent typo bugs
+const SEEN_KEY = 'last_seen_clubs';
+
 function getCategoryInitial(category?: string) {
   return category ? category.charAt(0).toUpperCase() : '?';
 }
+
+const markClubsSeen = async () => {
+  try {
+    const q = query(collection(db, 'clubs'), orderBy('created_at', 'desc'), limit(1));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const latest = snap.docs[0].data().created_at;
+      const millis = latest?.toMillis?.();
+      if (millis) {
+        await AsyncStorage.setItem(SEEN_KEY, String(millis));
+      }
+    }
+  } catch (e) {
+    console.log('markClubsSeen failed:', e);
+  }
+};
 
 export default function ClubsScreen() {
   const [clubs, setClubs] = useState<Club[]>([]);
@@ -42,8 +61,9 @@ export default function ClubsScreen() {
   const [openingLink, setOpeningLink] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
+  // FIX: per-club image error tracking
+  const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
 
-  // FIX #1: Real unmount protection
   useEffect(() => {
     let mounted = true;
 
@@ -61,7 +81,8 @@ export default function ClubsScreen() {
         }));
 
         setClubs(clubsData);
-      } catch {
+      } catch (e) {
+        console.log('Clubs load error:', e);
         if (!mounted) return;
         setError(true);
       } finally {
@@ -73,6 +94,7 @@ export default function ClubsScreen() {
     };
 
     load();
+    markClubsSeen();
 
     return () => { mounted = false; };
   }, []);
@@ -88,7 +110,9 @@ export default function ClubsScreen() {
         ...(docSnap.data() as Omit<Club, 'id'>),
       }));
       setClubs(clubsData);
-    } catch {
+      markClubsSeen();
+    } catch (e) {
+      console.log('Clubs refresh error:', e);
       setError(true);
     } finally {
       setRefreshing(false);
@@ -116,11 +140,11 @@ export default function ClubsScreen() {
     }
   }, [openingLink]);
 
-  // FIX #2 + #5: Search + category filter with safe category access
+  // FIX: safe toLowerCase with ?? '' guard + trimStart on search
   const filteredClubs = useMemo(() => {
     return clubs.filter(c => {
       const matchesSearch =
-        c.name.toLowerCase().includes(search.toLowerCase()) ||
+        (c.name ?? '').toLowerCase().includes(search.toLowerCase()) ||
         (c.category ?? '').toLowerCase().includes(search.toLowerCase());
 
       const matchesCategory =
@@ -152,7 +176,6 @@ export default function ClubsScreen() {
         <Text style={styles.subtitle}>Browse and join campus clubs here</Text>
       </View>
 
-      {/* Search bar */}
       <View style={styles.searchContainer}>
         <Ionicons name="search-outline" size={18} color="#888" style={styles.searchIcon} />
         <TextInput
@@ -160,7 +183,8 @@ export default function ClubsScreen() {
           placeholder="Search clubs..."
           placeholderTextColor="#aaa"
           value={search}
-          onChangeText={setSearch}
+          // FIX: trimStart so leading spaces don't break search
+          onChangeText={(text) => setSearch(text.trimStart())}
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')}>
@@ -169,7 +193,6 @@ export default function ClubsScreen() {
         )}
       </View>
 
-      {/* FIX #5: Category filter pills */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -225,13 +248,13 @@ export default function ClubsScreen() {
           filteredClubs.map((club) => (
             <View key={club.id} style={styles.clubCard}>
               <View style={styles.imageContainer}>
-                {/* FIX #3: image_url.trim() guard */}
-                {club.image_url && club.image_url.trim() ? (
+                {club.image_url && club.image_url.trim() && !imageErrors[club.id] ? (
                   <Image
                     source={{ uri: club.image_url.trim() }}
                     style={styles.clubImage}
                     resizeMode="cover"
-                    onError={() => {}}
+                    // FIX: per-club image error fallback
+                    onError={() => setImageErrors(prev => ({ ...prev, [club.id]: true }))}
                   />
                 ) : (
                   <View style={styles.placeholderImage}>
@@ -262,8 +285,9 @@ export default function ClubsScreen() {
                     </Text>
                   </View>
 
-                  {/* FIX #4: Loading indicator on Join button */}
+                  {/* FIX: activeOpacity for smoother touch feedback */}
                   <TouchableOpacity
+                    activeOpacity={0.8}
                     style={[styles.joinButton, openingLink && styles.joinButtonDisabled]}
                     onPress={() => handleJoinClub(club.whatsapp_link)}
                     disabled={openingLink}

@@ -1,6 +1,7 @@
 import { useAuth } from '@/lib/auth-context';
 import { db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
@@ -16,7 +17,6 @@ type Announcement = {
   is_active: boolean;
 };
 
-// FIX #9: Plain function — recalculates every render so greeting stays accurate
 function getDayGreeting(date = new Date()): 'morning' | 'afternoon' | 'evening' {
   const hour = date.getHours();
   if (hour < 12) return 'morning';
@@ -24,7 +24,6 @@ function getDayGreeting(date = new Date()): 'morning' | 'afternoon' | 'evening' 
   return 'evening';
 }
 
-// FIX #3: Safer date formatter — checks for toDate method before calling it
 function formatShortDate(timestamp: any) {
   if (!timestamp || !timestamp.toDate) return '';
   try {
@@ -66,10 +65,35 @@ export default function HomeScreen() {
   const [announcementError, setAnnouncementError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // FIX #9: greeting recalculates every render
   const greeting = getDayGreeting();
 
-  // FIX #4: Name fetch with cancellation guard
+  // Mark announcements as seen — saves latest Firestore timestamp to AsyncStorage
+  const markAnnouncementsSeen = useCallback(async () => {
+    try {
+      const q = query(
+        collection(db, 'announcements'),
+        where('is_active', '==', true),
+        orderBy('created_at', 'desc'),
+        limit(1)
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const latest = snap.docs[0].data().created_at;
+        const millis = latest?.toMillis?.();
+        if (millis) {
+          await AsyncStorage.setItem('last_seen_announcements', String(millis));
+        }
+      }
+    } catch (e) {
+      console.log('markAnnouncementsSeen failed:', e);
+    }
+  }, []);
+
+  // Mark seen when screen mounts
+  useEffect(() => {
+    markAnnouncementsSeen();
+  }, [markAnnouncementsSeen]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -83,7 +107,7 @@ export default function HomeScreen() {
             const first = fullName.split(' ')[0]?.trim();
             setUserName(first || 'Student');
           }
-        } catch (error) {
+        } catch {
           if (!cancelled) setUserName('Student');
         } finally {
           if (!cancelled) setLoadingName(false);
@@ -98,7 +122,6 @@ export default function HomeScreen() {
     return () => { cancelled = true; };
   }, [user]);
 
-  // FIX #2: orderBy newest first | FIX #7: error state | FIX #5: console.logs removed
   const fetchAnnouncements = useCallback(async () => {
     try {
       setAnnouncementError(false);
@@ -108,9 +131,7 @@ export default function HomeScreen() {
         orderBy('created_at', 'desc'),
         limit(10)
       );
-
       const querySnapshot = await getDocs(q);
-
       const data: Announcement[] = [];
       querySnapshot.forEach((doc) => {
         const docData = doc.data();
@@ -124,10 +145,9 @@ export default function HomeScreen() {
           is_active: docData.is_active !== false,
         });
       });
-
       setAnnouncements(data);
     } catch (err) {
-      console.error('Announcements fetch error:', err);
+      console.log('Announcements fetch error:', err);
       setAnnouncements([]);
       setAnnouncementError(true);
     } finally {
@@ -140,23 +160,21 @@ export default function HomeScreen() {
     fetchAnnouncements();
   }, [fetchAnnouncements]);
 
-  // FIX #12: Pull-to-refresh
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
     fetchAnnouncements();
-  }, [fetchAnnouncements]);
+    markAnnouncementsSeen();
+  }, [fetchAnnouncements, markAnnouncementsSeen]);
 
   return (
     <View className="flex-1 bg-[#F5F7FA]">
       <ScrollView
         showsVerticalScrollIndicator={false}
-        // FIX #12: Pull-to-refresh control
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
         }
       >
         <View className="px-5 pb-10 pt-14">
-          {/* FIX #1: Bell icon removed — simplified header */}
           <View className="items-start">
             <Text className="text-sm text-slate-500">UPSA Campus</Text>
             <Text className="mt-1 text-2xl font-extrabold text-slate-900">
@@ -226,12 +244,10 @@ export default function HomeScreen() {
                 <Text className="text-sm text-slate-500">Loading latest updates…</Text>
               </View>
             ) : announcementError ? (
-              // FIX #7: Show error state instead of silent empty
               <View className="rounded-2xl bg-white p-4 shadow-sm">
                 <Text className="text-sm text-red-500">Unable to load announcements. Pull down to retry.</Text>
               </View>
             ) : announcements.length === 0 ? (
-              // FIX #10: Better empty state text
               <View className="rounded-2xl bg-white p-4 shadow-sm">
                 <Text className="text-sm text-slate-500">No announcements yet. Check back later for campus updates.</Text>
               </View>
@@ -246,44 +262,44 @@ export default function HomeScreen() {
                     {(() => {
                       const date = formatShortDate(a.created_at);
                       return (
-                    <View className="items-start">
-                      <Text className="text-base font-semibold text-slate-900">
-                        {a.title}
-                      </Text>
-                      <View className="flex-row items-center mb-2">
-                        <View
-                          className="px-2 py-1 rounded-full mr-2"
-                          style={{
-                            backgroundColor:
-                              a.category === 'urgent' ? '#FEE2E2' :
-                              a.category === 'academic' ? '#DBEAFE' :
-                              a.category === 'event' ? '#D1FAE5' :
-                              '#F3F4F6',
-                          }}
-                        >
-                          <Text
-                            className="text-xs font-medium"
-                            style={{
-                              color:
-                                a.category === 'urgent' ? '#DC2626' :
-                                a.category === 'academic' ? '#2563EB' :
-                                a.category === 'event' ? '#059669' :
-                                '#6B7280',
-                            }}
-                          >
-                            {a.category.toUpperCase()}
+                        <View className="items-start">
+                          <Text className="text-base font-semibold text-slate-900">
+                            {a.title}
                           </Text>
+                          <View className="flex-row items-center mb-2">
+                            <View
+                              className="px-2 py-1 rounded-full mr-2"
+                              style={{
+                                backgroundColor:
+                                  a.category === 'urgent' ? '#FEE2E2' :
+                                  a.category === 'academic' ? '#DBEAFE' :
+                                  a.category === 'event' ? '#D1FAE5' :
+                                  '#F3F4F6',
+                              }}
+                            >
+                              <Text
+                                className="text-xs font-medium"
+                                style={{
+                                  color:
+                                    a.category === 'urgent' ? '#DC2626' :
+                                    a.category === 'academic' ? '#2563EB' :
+                                    a.category === 'event' ? '#059669' :
+                                    '#6B7280',
+                                }}
+                              >
+                                {a.category.toUpperCase()}
+                              </Text>
+                            </View>
+                            {date ? (
+                              <Text className="text-xs text-slate-400">{date}</Text>
+                            ) : null}
+                          </View>
+                          {!!a.body && (
+                            <Text className="mt-2 text-sm text-slate-600" numberOfLines={2} ellipsizeMode="tail">
+                              {a.body}
+                            </Text>
+                          )}
                         </View>
-                        {date ? (
-                          <Text className="text-xs text-slate-400">{date}</Text>
-                        ) : null}
-                      </View>
-                      {!!a.body && (
-                        <Text className="mt-2 text-sm text-slate-600" numberOfLines={2} ellipsizeMode="tail">
-                          {a.body}
-                        </Text>
-                      )}
-                    </View>
                       );
                     })()}
                   </Pressable>

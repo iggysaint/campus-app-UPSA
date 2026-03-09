@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Modal,
@@ -26,7 +27,6 @@ import {
   View,
 } from 'react-native';
 
-// FIX #1: url field matches student screen
 type LibraryFile = {
   id: string;
   title: string;
@@ -48,7 +48,6 @@ const categories = [
   { label: 'Books', value: 'Books' },
 ];
 
-// FIX #9: getCategoryColors — separate bg/text, not combined Tailwind classes
 const getCategoryColors = (category: string) => {
   switch (category) {
     case 'PDF': return { bg: '#FDEAEA', text: '#DC2626' };
@@ -77,9 +76,8 @@ const getCategoryIcon = (category: string) => {
   }
 };
 
-// FIX #8: formatDate crash guard
 const formatDate = (timestamp: any) => {
-  if (!timestamp || !timestamp.toDate) return '';
+  if (!timestamp?.toDate) return '';
   try {
     return timestamp.toDate().toLocaleDateString();
   } catch {
@@ -89,7 +87,6 @@ const formatDate = (timestamp: any) => {
 
 export default function AdminLibrary() {
   const router = useRouter();
-  // FIX #6: admin role check
   const role = useUserRole();
   const [files, setFiles] = useState<LibraryFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,8 +100,6 @@ export default function AdminLibrary() {
     url: '',
   });
 
-  // FIX #10: extracted reusable fetchFiles
-  // FIX #7: only fetch is_active == true
   const fetchFiles = useCallback(async () => {
     try {
       const q = query(
@@ -118,7 +113,6 @@ export default function AdminLibrary() {
         const docData = docSnap.data();
         data.push({
           id: docSnap.id,
-          // FIX #1: read url not file_url
           title: docData.title || '',
           description: docData.description || '',
           category: docData.category || 'PDF',
@@ -127,10 +121,8 @@ export default function AdminLibrary() {
           is_active: docData.is_active !== false,
         });
       });
-      // FIX #3: removed broken .sort().reverse() — orderBy handles it
       setFiles(data);
-    } catch (error) {
-      console.error('Error fetching files:', error);
+    } catch {
       Alert.alert('Error', 'Failed to load files');
     } finally {
       setLoading(false);
@@ -138,7 +130,6 @@ export default function AdminLibrary() {
   }, []);
 
   useEffect(() => {
-    // FIX #6: redirect non-admins
     if (role && role !== 'admin') {
       router.replace('/(tabs)');
       return;
@@ -153,7 +144,6 @@ export default function AdminLibrary() {
   };
 
   const handleSave = async () => {
-    // FIX #4: saving guard
     if (saving) return;
 
     if (!formData.title.trim() || !formData.description.trim()) {
@@ -161,7 +151,6 @@ export default function AdminLibrary() {
       return;
     }
 
-    // FIX #5: Strong URL validation using built-in URL parser
     if (formData.url) {
       try {
         new URL(formData.url.trim());
@@ -178,12 +167,10 @@ export default function AdminLibrary() {
           title: formData.title.trim(),
           description: formData.description.trim(),
           category: formData.category,
-          // FIX #1: save as url not file_url
           url: formData.url.trim(),
           is_active: true,
         });
 
-        // FIX #11: update local state instead of re-fetching
         setFiles(prev => prev.map(f =>
           f.id === editingFile.id
             ? { ...f, title: formData.title.trim(), description: formData.description.trim(), category: formData.category, url: formData.url.trim() }
@@ -196,14 +183,12 @@ export default function AdminLibrary() {
           title: formData.title.trim(),
           description: formData.description.trim(),
           category: formData.category,
-          // FIX #1: save as url not file_url
           url: formData.url.trim(),
           uploaded_by: auth.currentUser?.uid,
           created_at: serverTimestamp(),
           is_active: true,
         });
 
-        // FIX #11: update local state instead of re-fetching
         setFiles(prev => [{
           id: docRef.id,
           title: formData.title.trim(),
@@ -218,8 +203,7 @@ export default function AdminLibrary() {
       }
 
       resetForm();
-    } catch (error) {
-      console.error('Error saving file:', error);
+    } catch {
       Alert.alert('Error', 'Failed to save file');
     } finally {
       setSaving(false);
@@ -232,7 +216,6 @@ export default function AdminLibrary() {
       title: file.title,
       description: file.description,
       category: file.category,
-      // FIX #1: use url not file_url
       url: file.url,
     });
     setModalVisible(true);
@@ -249,13 +232,10 @@ export default function AdminLibrary() {
           style: 'destructive',
           onPress: async () => {
             try {
-              // FIX #2: soft delete — consistent with student screen
               await updateDoc(doc(db, 'library', file.id), { is_active: false });
-              // FIX #11: update local state
               setFiles(prev => prev.filter(f => f.id !== file.id));
               Alert.alert('Success', 'File removed successfully!');
-            } catch (error) {
-              console.error('Error removing file:', error);
+            } catch {
               Alert.alert('Error', 'Failed to remove file');
             }
           },
@@ -267,17 +247,18 @@ export default function AdminLibrary() {
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-[#F2F4F6]">
-        <Text className="text-slate-500">Loading files...</Text>
+        <ActivityIndicator color="#0088CC" />
+        <Text className="text-slate-500 mt-2">Loading files...</Text>
       </View>
     );
   }
 
   return (
-    // FIX #13: flex-1 so FAB positions correctly
     <View className="flex-1 bg-[#F2F4F6]">
       <View className="pt-12 pb-4 px-6">
         <View className="flex-row items-center justify-between mb-4">
-          <TouchableOpacity onPress={() => router.push('/admin')} className="p-2">
+          {/* FIX: router.back() */}
+          <TouchableOpacity onPress={() => router.back()} className="p-2">
             <Ionicons name="arrow-back" size={24} color="#0088CC" />
           </TouchableOpacity>
           <Text className="text-xl font-bold text-slate-900">Manage Library</Text>
@@ -285,7 +266,6 @@ export default function AdminLibrary() {
         </View>
       </View>
 
-      {/* FIX #12: Empty state UI */}
       {files.length === 0 ? (
         <View className="flex-1 items-center justify-center px-6">
           <Ionicons name="library-outline" size={48} color="#9CA3AF" />
@@ -307,7 +287,6 @@ export default function AdminLibrary() {
                         <View className="w-10 h-10 items-center justify-center rounded-lg bg-blue-100">
                           <Ionicons name={getCategoryIcon(file.category)} size={18} color="#0088CC" />
                         </View>
-                        {/* FIX #9: bg on View, text on Text separately */}
                         <View className="px-2 py-1 rounded-full" style={{ backgroundColor: colors.bg }}>
                           <Text className="text-xs font-medium" style={{ color: colors.text }}>
                             {file.category.toUpperCase()}
@@ -319,7 +298,6 @@ export default function AdminLibrary() {
                           </Text>
                         ) : null}
                       </View>
-                      {/* FIX #14: numberOfLines={1} on title */}
                       <Text className="text-base font-semibold text-slate-900 mb-1" numberOfLines={1}>
                         {file.title}
                       </Text>
@@ -349,7 +327,6 @@ export default function AdminLibrary() {
         </ScrollView>
       )}
 
-      {/* FIX #13: FAB correctly positioned in flex-1 container */}
       <TouchableOpacity
         onPress={() => setModalVisible(true)}
         className="absolute bottom-8 right-6 w-14 h-14 bg-[#0088CC] rounded-full shadow-lg items-center justify-center"
@@ -357,7 +334,6 @@ export default function AdminLibrary() {
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
-      {/* Add/Edit File Modal */}
       <Modal
         visible={modalVisible}
         transparent
@@ -375,40 +351,39 @@ export default function AdminLibrary() {
               </Text>
 
               <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Title */}
                 <View className="mb-4">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Title</Text>
                   <TextInput
                     className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
                     value={formData.title}
-                    onChangeText={(text) => setFormData({ ...formData, title: text })}
+                    onChangeText={(text) => setFormData(prev => ({ ...prev, title: text.trimStart() }))}
                     placeholder="Enter file title"
+                    maxLength={120}
                     editable={!saving}
                   />
                 </View>
 
-                {/* Description */}
                 <View className="mb-4">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Description</Text>
                   <TextInput
                     className="w-full h-24 rounded-lg border border-gray-300 p-3 text-slate-900"
                     value={formData.description}
-                    onChangeText={(text) => setFormData({ ...formData, description: text })}
+                    onChangeText={(text) => setFormData(prev => ({ ...prev, description: text.trimStart() }))}
                     placeholder="Enter file description"
                     multiline
                     textAlignVertical="top"
+                    maxLength={300}
                     editable={!saving}
                   />
                 </View>
 
-                {/* Category */}
                 <View className="mb-4">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Category</Text>
                   <View className="flex-row flex-wrap gap-2">
                     {categories.map((cat) => (
                       <TouchableOpacity
                         key={cat.value}
-                        onPress={() => setFormData({ ...formData, category: cat.value })}
+                        onPress={() => setFormData(prev => ({ ...prev, category: cat.value }))}
                         disabled={saving}
                         className={`px-3 py-2 rounded-lg border ${
                           formData.category === cat.value
@@ -426,13 +401,12 @@ export default function AdminLibrary() {
                   </View>
                 </View>
 
-                {/* File URL */}
                 <View className="mb-6">
                   <Text className="mb-2 text-sm font-medium text-slate-700">File URL</Text>
                   <TextInput
                     className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
                     value={formData.url}
-                    onChangeText={(text) => setFormData({ ...formData, url: text })}
+                    onChangeText={(text) => setFormData(prev => ({ ...prev, url: text.trim() }))}
                     placeholder="Enter file URL (https://...)"
                     autoCapitalize="none"
                     autoCorrect={false}
@@ -440,7 +414,6 @@ export default function AdminLibrary() {
                   />
                 </View>
 
-                {/* Action Buttons */}
                 <View className="flex-row gap-3">
                   <TouchableOpacity
                     className="flex-1 rounded-lg bg-gray-200 p-3"
@@ -449,7 +422,6 @@ export default function AdminLibrary() {
                   >
                     <Text className="text-center font-medium text-slate-700">Cancel</Text>
                   </TouchableOpacity>
-
                   <TouchableOpacity
                     className={`flex-1 rounded-lg p-3 ${saving ? 'bg-[#0088CC]/50' : 'bg-[#0088CC]'}`}
                     onPress={handleSave}

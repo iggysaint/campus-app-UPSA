@@ -2,11 +2,13 @@ import { COLORS, RADIUS, SPACING } from '@/constants/theme';
 import { useUserRole } from '@/lib/auth-context';
 import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   addDoc,
   collection,
   doc,
   getDocs,
+  limit,
   orderBy,
   query,
   serverTimestamp,
@@ -17,6 +19,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Clipboard,
   Linking,
   Modal,
   RefreshControl,
@@ -41,7 +44,8 @@ interface LibraryResource {
 
 const CATEGORIES = ['All', 'PDF', 'Past Paper', 'Template', 'Letter', 'Slides', 'Videos', 'Notes', 'Books'];
 
-// FIX #16: helper functions outside component
+const SEEN_KEY = 'last_seen_library';
+
 const getCategoryColors = (category: string) => {
   const colors: { [key: string]: { bg: string; text: string } } = {
     'PDF': { bg: '#FDEAEA', text: '#DC2626' },
@@ -61,18 +65,49 @@ const getFileIcon = (category: string) => {
     case 'PDF':
     case 'Past Paper':
     case 'Letter':
-    case 'Template':
-      return 'document-text-outline';
-    case 'Videos':
-      return 'videocam-outline';
-    case 'Slides':
-      return 'layers-outline';
-    case 'Notes':
-      return 'create-outline';
-    case 'Books':
-      return 'book-outline';
-    default:
-      return 'document-outline';
+    case 'Template': return 'document-text-outline';
+    case 'Videos': return 'videocam-outline';
+    case 'Slides': return 'layers-outline';
+    case 'Notes': return 'create-outline';
+    case 'Books': return 'book-outline';
+    default: return 'document-outline';
+  }
+};
+
+const formatUploadDate = (timestamp: any): string => {
+  if (!timestamp?.toDate) return '';
+  try {
+    const date = timestamp.toDate();
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
+};
+
+const markLibrarySeen = async () => {
+  try {
+    const q = query(
+      collection(db, 'library'),
+      where('is_active', '==', true),
+      orderBy('created_at', 'desc'),
+      limit(1)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const latest = snap.docs[0].data().created_at;
+      const millis = latest?.toMillis?.();
+      if (millis) {
+        await AsyncStorage.setItem(SEEN_KEY, String(millis));
+      }
+    }
+  } catch (e) {
+    console.log('markLibrarySeen failed:', e);
   }
 };
 
@@ -93,35 +128,34 @@ export default function LibraryScreen() {
     url: '',
   });
 
-  // FIX #3: use useUserRole from auth-context instead of fetching separately
   const role = useUserRole();
 
-  // FIX #9: unmount cleanup + FIX #14: orderBy created_at desc
+  // FIX: extracted fetchResources — reused by load and refresh
+  const fetchResources = useCallback(async () => {
+    const q = query(
+      collection(db, 'library'),
+      where('is_active', '==', true),
+      orderBy('created_at', 'desc')
+    );
+    const querySnapshot = await getDocs(q);
+    const resourcesData: LibraryResource[] = [];
+    querySnapshot.forEach((docSnap) => {
+      resourcesData.push({ id: docSnap.id, ...docSnap.data() } as LibraryResource);
+    });
+    return Array.from(new Map(resourcesData.map(r => [r.id, r])).values());
+  }, []);
+
   useEffect(() => {
     let mounted = true;
 
     const load = async () => {
       try {
         setError(false);
-        const q = query(
-          collection(db, 'library'),
-          where('is_active', '==', true),
-          orderBy('created_at', 'desc')
-        );
-        const querySnapshot = await getDocs(q);
-        const resourcesData: LibraryResource[] = [];
-        querySnapshot.forEach((docSnap) => {
-          resourcesData.push({ id: docSnap.id, ...docSnap.data() } as LibraryResource);
-        });
-
+        const data = await fetchResources();
         if (!mounted) return;
-
-        // FIX #11: deduplicate resources
-        const unique = Array.from(
-          new Map(resourcesData.map(r => [r.id, r])).values()
-        );
-
-        setResources(unique);
+        setResources(data);
+        // FIX: mark seen AFTER load so dot clears only when content is visible
+        await markLibrarySeen();
       } catch {
         if (!mounted) return;
         setError(true);
@@ -135,35 +169,22 @@ export default function LibraryScreen() {
 
     load();
     return () => { mounted = false; };
-  }, []);
+  }, [fetchResources]);
 
-  // FIX #7: pull-to-refresh
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     setError(false);
     try {
-      const q = query(
-        collection(db, 'library'),
-        where('is_active', '==', true),
-        orderBy('created_at', 'desc')
-      );
-      const querySnapshot = await getDocs(q);
-      const resourcesData: LibraryResource[] = [];
-      querySnapshot.forEach((docSnap) => {
-        resourcesData.push({ id: docSnap.id, ...docSnap.data() } as LibraryResource);
-      });
-      const unique = Array.from(
-        new Map(resourcesData.map(r => [r.id, r])).values()
-      );
-      setResources(unique);
+      const data = await fetchResources();
+      setResources(data);
+      await markLibrarySeen();
     } catch {
       setError(true);
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [fetchResources]);
 
-  // FIX #2: safe URL opening with canOpenURL + spam guard
   const openResource = useCallback(async (id: string, url: string) => {
     if (!url) {
       Alert.alert('Invalid URL', 'This resource does not have a valid link.');
@@ -172,11 +193,7 @@ export default function LibraryScreen() {
     if (openingId === id) return;
     setOpeningId(id);
     try {
-      const supported = await Linking.canOpenURL(url);
-      if (!supported) {
-        Alert.alert('Invalid Link', 'Cannot open this resource.');
-        return;
-      }
+      // FIX: skip canOpenURL — some valid links (e.g. Google Drive) fail it
       await Linking.openURL(url);
     } catch {
       Alert.alert('Error', 'Failed to open resource.');
@@ -185,23 +202,19 @@ export default function LibraryScreen() {
     }
   }, [openingId]);
 
-  // FIX #4 + #12 + #13: useMemo filter with safe access + search title & description
   const filteredResources = useMemo(() => {
     let filtered = resources;
-
     if (selectedCategory !== 'All') {
       filtered = filtered.filter(r =>
         (r.category ?? '').toLowerCase() === selectedCategory.toLowerCase()
       );
     }
-
     if (searchQuery.trim()) {
       filtered = filtered.filter(r =>
-        r.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        r.description?.toLowerCase().includes(searchQuery.toLowerCase())
+        (r.title ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (r.description ?? '').toLowerCase().includes(searchQuery.toLowerCase())
       );
     }
-
     return filtered;
   }, [resources, searchQuery, selectedCategory]);
 
@@ -210,7 +223,6 @@ export default function LibraryScreen() {
     setShowAddModal(false);
   };
 
-  // FIX #5: serverTimestamp + FIX #8: saving guard
   const saveResource = async () => {
     if (saving) return;
 
@@ -219,25 +231,14 @@ export default function LibraryScreen() {
       return;
     }
 
-    // FIX #3: URL format validation
-    if (!addForm.url.startsWith('http')) {
-      Alert.alert('Invalid URL', 'URL must start with http or https');
+    // FIX: stronger URL validation
+    if (!/^https?:\/\//i.test(addForm.url)) {
+      Alert.alert('Invalid URL', 'URL must start with http:// or https://');
       return;
     }
 
-    // FIX #4: auth guard
     if (!auth.currentUser) {
       Alert.alert('Error', 'You must be logged in to add resources');
-      return;
-    }
-
-    if (!auth.currentUser) {
-      Alert.alert('Error', 'You must be logged in to add a resource');
-      return;
-    }
-
-    if (!addForm.url.startsWith('http')) {
-      Alert.alert('Invalid URL', 'URL must start with http or https');
       return;
     }
 
@@ -248,19 +249,18 @@ export default function LibraryScreen() {
         description: addForm.description.trim(),
         category: addForm.category,
         url: addForm.url.trim(),
-        uploaded_by: auth.currentUser?.uid,
-        // FIX #5: serverTimestamp instead of new Date()
+        uploaded_by: auth.currentUser.uid,
         created_at: serverTimestamp(),
         is_active: true,
       };
 
       const docRef = await addDoc(collection(db, 'library'), resourceData);
 
-      // Update local state instead of re-fetching
+      // FIX: use new Date() not null so sort position is stable
       setResources(prev => [{
         id: docRef.id,
         ...resourceData,
-        created_at: null,
+        created_at: new Date(),
       }, ...prev]);
 
       resetForm();
@@ -283,7 +283,6 @@ export default function LibraryScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              // FIX #17: soft delete — alert says "removed" not "deleted"
               await updateDoc(doc(db, 'library', resourceId), { is_active: false });
               setResources(prev => prev.filter(r => r.id !== resourceId));
               Alert.alert('Success', 'Resource removed successfully');
@@ -317,7 +316,6 @@ export default function LibraryScreen() {
         <Text style={styles.subtitle}>Academic resources and materials</Text>
       </View>
 
-      {/* Search Bar */}
       <View style={styles.searchContainer}>
         <View style={styles.searchInputRow}>
           <Ionicons name="search-outline" size={18} color="#888" style={{ marginRight: 8 }} />
@@ -325,7 +323,7 @@ export default function LibraryScreen() {
             style={styles.searchTextInput}
             placeholder="Search resources..."
             value={searchQuery}
-            onChangeText={setSearchQuery}
+            onChangeText={(text) => setSearchQuery(text.trimStart())}
             placeholderTextColor="#888888"
           />
           {searchQuery.length > 0 && (
@@ -336,7 +334,6 @@ export default function LibraryScreen() {
         </View>
       </View>
 
-      {/* FIX #10: compact category filter pills */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -346,16 +343,10 @@ export default function LibraryScreen() {
         {CATEGORIES.map((category) => (
           <TouchableOpacity
             key={category}
-            style={[
-              styles.categoryPill,
-              selectedCategory === category && styles.categoryPillSelected,
-            ]}
+            style={[styles.categoryPill, selectedCategory === category && styles.categoryPillSelected]}
             onPress={() => setSelectedCategory(category)}
           >
-            <Text style={[
-              styles.categoryPillText,
-              selectedCategory === category && styles.categoryPillTextSelected,
-            ]}>
+            <Text style={[styles.categoryPillText, selectedCategory === category && styles.categoryPillTextSelected]}>
               {category}
             </Text>
           </TouchableOpacity>
@@ -366,12 +357,8 @@ export default function LibraryScreen() {
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
-        // FIX #7: pull-to-refresh
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
-        {/* FIX #6: error state */}
         {error ? (
           <View style={styles.emptyState}>
             <Ionicons name="cloud-offline-outline" size={48} color="#9CA3AF" />
@@ -390,17 +377,26 @@ export default function LibraryScreen() {
           </View>
         ) : (
           filteredResources.map((resource) => {
+            // FIX: use local category variable consistently
             const category = resource.category ?? 'PDF';
             const colors = getCategoryColors(category);
-            const icon = getFileIcon(category);
+            const uploadDate = formatUploadDate(resource.created_at);
             return (
-              <View key={resource.id} style={styles.resourceCard}>
+              <TouchableOpacity
+                key={resource.id}
+                activeOpacity={0.95}
+                style={styles.resourceCard}
+                // FIX: long press to copy link
+                onLongPress={() => {
+                  Clipboard.setString(resource.url);
+                  Alert.alert('Copied', 'Link copied to clipboard');
+                }}
+              >
                 <View style={styles.topRow}>
                   <View style={styles.iconContainer}>
-                    <Ionicons name={getFileIcon(resource.category ?? 'PDF')} size={20} color="#0088CC" />
+                    <Ionicons name={getFileIcon(category)} size={20} color="#0088CC" />
                   </View>
                   <View style={styles.titleContainer}>
-                    {/* FIX #15: numberOfLines={1} on title */}
                     <Text style={styles.resourceTitle} numberOfLines={1}>
                       {resource.title}
                     </Text>
@@ -411,13 +407,21 @@ export default function LibraryScreen() {
                 </View>
 
                 <View style={styles.bottomRow}>
-                  <View style={[styles.categoryBadge, { backgroundColor: colors.bg }]}>
-                    <Text style={[styles.categoryBadgeText, { color: colors.text }]}>
-                      {resource.category}
-                    </Text>
+                  <View style={styles.bottomLeft}>
+                    <View style={[styles.categoryBadge, { backgroundColor: colors.bg }]}>
+                      {/* FIX: use local category variable not resource.category */}
+                      <Text style={[styles.categoryBadgeText, { color: colors.text }]}>
+                        {category}
+                      </Text>
+                    </View>
+                    {/* FIX: show upload date */}
+                    {uploadDate ? (
+                      <Text style={styles.uploadDate}>{uploadDate}</Text>
+                    ) : null}
                   </View>
 
                   <TouchableOpacity
+                    activeOpacity={0.8}
                     style={[styles.openButton, openingId === resource.id && { opacity: 0.6 }]}
                     onPress={() => openResource(resource.id, resource.url)}
                     disabled={openingId === resource.id}
@@ -438,7 +442,7 @@ export default function LibraryScreen() {
                     <Ionicons name="trash-outline" size={16} color="#DC2626" />
                   </TouchableOpacity>
                 )}
-              </View>
+              </TouchableOpacity>
             );
           })
         )}
@@ -450,7 +454,6 @@ export default function LibraryScreen() {
         </TouchableOpacity>
       )}
 
-      {/* Add Resource Modal */}
       <Modal
         visible={showAddModal}
         animationType="slide"
@@ -470,8 +473,9 @@ export default function LibraryScreen() {
             <TextInput
               style={styles.input}
               value={addForm.title}
-              onChangeText={(text) => setAddForm(prev => ({ ...prev, title: text }))}
+              onChangeText={(text) => setAddForm(prev => ({ ...prev, title: text.trimStart() }))}
               placeholder="Enter resource title"
+              maxLength={120}
               editable={!saving}
             />
 
@@ -479,15 +483,15 @@ export default function LibraryScreen() {
             <TextInput
               style={[styles.input, styles.textArea]}
               value={addForm.description}
-              onChangeText={(text) => setAddForm(prev => ({ ...prev, description: text }))}
+              onChangeText={(text) => setAddForm(prev => ({ ...prev, description: text.trimStart() }))}
               placeholder="Enter resource description"
               multiline
               numberOfLines={4}
+              maxLength={300}
               editable={!saving}
             />
 
             <Text style={styles.inputLabel}>Category</Text>
-            {/* FIX #16: real category pills instead of fake dropdown */}
             <View style={styles.categoryPickerRow}>
               {CATEGORIES.filter(cat => cat !== 'All').map((category) => (
                 <TouchableOpacity
@@ -513,8 +517,8 @@ export default function LibraryScreen() {
             <TextInput
               style={styles.input}
               value={addForm.url}
-              onChangeText={(text) => setAddForm(prev => ({ ...prev, url: text }))}
-              placeholder="Enter resource URL"
+              onChangeText={(text) => setAddForm(prev => ({ ...prev, url: text.trim() }))}
+              placeholder="https://..."
               autoCapitalize="none"
               autoCorrect={false}
               editable={!saving}
@@ -529,10 +533,15 @@ export default function LibraryScreen() {
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
+            {/* FIX: disable save button when fields empty */}
             <TouchableOpacity
-              style={[styles.modalButton, styles.saveButton, saving && { opacity: 0.6 }]}
+              style={[
+                styles.modalButton,
+                styles.saveButton,
+                (saving || !addForm.title || !addForm.url) && { opacity: 0.5 }
+              ]}
               onPress={saveResource}
-              disabled={saving}
+              disabled={saving || !addForm.title || !addForm.url}
             >
               <Text style={styles.saveButtonText}>
                 {saving ? 'Saving...' : 'Add Resource'}
@@ -546,295 +555,89 @@ export default function LibraryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  header: {
-    paddingHorizontal: SPACING.lg,
-    paddingTop: 50,
-    paddingBottom: SPACING.sm,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#111111',
-    marginBottom: SPACING.xs,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#888888',
-  },
-  searchContainer: {
-    paddingHorizontal: SPACING.lg,
-    marginBottom: SPACING.sm,
-  },
+  container: { flex: 1, backgroundColor: COLORS.background },
+  header: { paddingHorizontal: SPACING.lg, paddingTop: 50, paddingBottom: SPACING.sm },
+  title: { fontSize: 18, fontWeight: '600', color: '#111111', marginBottom: SPACING.xs },
+  subtitle: { fontSize: 13, color: '#888888' },
+  searchContainer: { paddingHorizontal: SPACING.lg, marginBottom: SPACING.sm },
   searchInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
+    borderRadius: 12, paddingHorizontal: SPACING.md, paddingVertical: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
   },
-  searchTextInput: {
-    flex: 1,
-    fontSize: 14,
-    color: COLORS.text,
-  },
-  // FIX #10: compact pills
-  categoryContainer: {
-    flexGrow: 0,
-    marginBottom: SPACING.sm,
-    maxHeight: 36,
-  },
-  categoryContent: {
-    paddingHorizontal: SPACING.lg,
-    alignItems: 'center',
-  },
+  searchTextInput: { flex: 1, fontSize: 14, color: COLORS.text },
+  categoryContainer: { flexGrow: 0, marginBottom: SPACING.sm, maxHeight: 36 },
+  categoryContent: { paddingHorizontal: SPACING.lg, alignItems: 'center' },
   categoryPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#0088CC',
-    marginRight: 6,
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20,
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#0088CC', marginRight: 6,
   },
-  categoryPillSelected: {
-    backgroundColor: '#0088CC',
-    borderColor: '#0088CC',
-  },
-  categoryPillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#0088CC',
-  },
-  categoryPillTextSelected: {
-    color: '#fff',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: SPACING.lg,
-    paddingBottom: SPACING.xl,
-  },
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingTop: SPACING.xl * 2,
-    gap: 8,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginTop: 8,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: COLORS.textSecondary,
-    textAlign: 'center',
-  },
+  categoryPillSelected: { backgroundColor: '#0088CC', borderColor: '#0088CC' },
+  categoryPillText: { fontSize: 11, fontWeight: '600', color: '#0088CC' },
+  categoryPillTextSelected: { color: '#fff' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  scrollView: { flex: 1 },
+  scrollContent: { paddingHorizontal: SPACING.lg, paddingBottom: SPACING.xl },
+  emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: SPACING.xl * 2, gap: 8 },
+  emptyText: { fontSize: 18, fontWeight: '600', color: COLORS.text, marginTop: 8 },
+  emptySubtext: { fontSize: 14, color: COLORS.textSecondary, textAlign: 'center' },
   resourceCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
+    backgroundColor: '#fff', borderRadius: 12, padding: 12, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05, shadowRadius: 2, elevation: 2,
   },
-  topRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
+  topRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
   iconContainer: {
-    width: 40,
-    height: 40,
-    backgroundColor: '#EAF5FD',
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
+    width: 40, height: 40, backgroundColor: '#EAF5FD', borderRadius: 10,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
-  titleContainer: {
-    flex: 1,
-  },
-  resourceTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#111111',
-    marginBottom: 2,
-  },
-  resourceDescription: {
-    fontSize: 13,
-    color: '#888888',
-    lineHeight: 18,
-  },
-  bottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  categoryBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  categoryBadgeText: {
-    fontSize: 11,
-    fontWeight: '500',
-  },
+  titleContainer: { flex: 1 },
+  resourceTitle: { fontSize: 15, fontWeight: '600', color: '#111111', marginBottom: 2 },
+  resourceDescription: { fontSize: 13, color: '#888888', lineHeight: 18 },
+  bottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  bottomLeft: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  categoryBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 },
+  categoryBadgeText: { fontSize: 11, fontWeight: '500' },
+  uploadDate: { fontSize: 11, color: '#9CA3AF' },
   openButton: {
-    backgroundColor: '#0088CC',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    minWidth: 60,
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#0088CC', borderRadius: 16, paddingHorizontal: 16,
+    paddingVertical: 6, minWidth: 60, alignItems: 'center', justifyContent: 'center',
   },
-  openButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  deleteButton: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    padding: 4,
-  },
+  openButtonText: { fontSize: 12, fontWeight: '600', color: '#fff' },
+  deleteButton: { position: 'absolute', top: 8, right: 8, padding: 4 },
   fab: {
-    position: 'absolute',
-    bottom: SPACING.xl,
-    right: SPACING.lg,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#0088CC',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
+    position: 'absolute', bottom: SPACING.xl, right: SPACING.lg,
+    width: 56, height: 56, borderRadius: 28, backgroundColor: '#0088CC',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
   },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
+  modalContainer: { flex: 1, backgroundColor: COLORS.background },
   modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: SPACING.lg,
-    paddingTop: 60,
-    paddingBottom: SPACING.md,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: SPACING.lg, paddingTop: 60, paddingBottom: SPACING.md,
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  modalContent: {
-    flex: 1,
-    paddingHorizontal: SPACING.lg,
-  },
-  inputLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: SPACING.sm,
-    marginTop: SPACING.md,
-  },
+  modalTitle: { fontSize: 20, fontWeight: '600', color: COLORS.text },
+  modalContent: { flex: 1, paddingHorizontal: SPACING.lg },
+  inputLabel: { fontSize: 16, fontWeight: '600', color: COLORS.text, marginBottom: SPACING.sm, marginTop: SPACING.md },
   input: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: RADIUS.sm,
-    paddingHorizontal: SPACING.md,
-    fontSize: 16,
-    color: COLORS.text,
-    backgroundColor: COLORS.surface,
+    height: 48, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.sm,
+    paddingHorizontal: SPACING.md, fontSize: 16, color: COLORS.text, backgroundColor: COLORS.surface,
   },
-  textArea: {
-    height: 100,
-    textAlignVertical: 'top',
-    paddingTop: SPACING.sm,
-  },
-  // FIX #16: real category picker pills
-  categoryPickerRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
+  textArea: { height: 100, textAlignVertical: 'top', paddingTop: SPACING.sm },
+  categoryPickerRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   categoryPickerPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
   },
-  categoryPickerPillSelected: {
-    backgroundColor: '#0088CC',
-    borderColor: '#0088CC',
-  },
-  categoryPickerText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: COLORS.text,
-  },
-  categoryPickerTextSelected: {
-    color: '#fff',
-  },
-  modalFooter: {
-    flexDirection: 'row',
-    paddingHorizontal: SPACING.lg,
-    paddingBottom: SPACING.xl,
-    gap: SPACING.md,
-  },
-  modalButton: {
-    flex: 1,
-    height: 48,
-    borderRadius: RADIUS.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cancelButton: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  saveButton: {
-    backgroundColor: '#0088CC',
-  },
-  saveButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
-  },
+  categoryPickerPillSelected: { backgroundColor: '#0088CC', borderColor: '#0088CC' },
+  categoryPickerText: { fontSize: 13, fontWeight: '500', color: COLORS.text },
+  categoryPickerTextSelected: { color: '#fff' },
+  modalFooter: { flexDirection: 'row', paddingHorizontal: SPACING.lg, paddingBottom: SPACING.xl, gap: SPACING.md },
+  modalButton: { flex: 1, height: 48, borderRadius: RADIUS.sm, justifyContent: 'center', alignItems: 'center' },
+  cancelButton: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border },
+  cancelButtonText: { fontSize: 16, fontWeight: '600', color: COLORS.text },
+  saveButton: { backgroundColor: '#0088CC' },
+  saveButtonText: { fontSize: 16, fontWeight: '600', color: '#fff' },
 });

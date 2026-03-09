@@ -65,7 +65,6 @@ export default function AdminSchedules() {
   const fetchSchedules = useCallback(async () => {
     setError(false);
     try {
-      // FIX: fetch all docs, sort client-side so old docs without created_at are not ignored
       const q = query(collection(db, 'schedules'));
       const querySnapshot = await getDocs(q);
       const data: Schedule[] = [];
@@ -86,7 +85,6 @@ export default function AdminSchedules() {
           created_at: d.created_at,
         });
       });
-      // Sort client-side — docs without created_at go to bottom
       setSchedules(data.sort((a, b) => (b.created_at?.toMillis?.() || 0) - (a.created_at?.toMillis?.() || 0)));
     } catch {
       setError(true);
@@ -228,7 +226,8 @@ export default function AdminSchedules() {
   return (
     <View className="flex-1 bg-[#F2F4F6]">
       <View className="pt-12 pb-4 px-6 flex-row items-center justify-between">
-        <TouchableOpacity onPress={() => router.push('/admin')} className="p-2">
+        {/* FIX: router.back() */}
+        <TouchableOpacity onPress={() => router.back()} className="p-2">
           <Ionicons name="arrow-back" size={24} color="#0088CC" />
         </TouchableOpacity>
         <Text className="text-xl font-bold text-slate-900">Manage Schedules</Text>
