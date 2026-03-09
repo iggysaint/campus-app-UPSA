@@ -1,9 +1,32 @@
 import { COLORS, RADIUS, SPACING } from '@/constants/theme';
+import { useUserRole } from '@/lib/auth-context';
 import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
-import { addDoc, collection, doc, getDoc, getDocs, query, updateDoc, where } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  addDoc,
+  collection,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Modal,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
 interface LibraryResource {
   id: string;
@@ -16,203 +39,261 @@ interface LibraryResource {
   is_active: boolean;
 }
 
-interface AddResourceForm {
-  title: string;
-  description: string;
-  category: string;
-  url: string;
-}
-
 const CATEGORIES = ['All', 'PDF', 'Past Paper', 'Template', 'Letter', 'Slides', 'Videos', 'Notes', 'Books'];
+
+// FIX #16: helper functions outside component
+const getCategoryColors = (category: string) => {
+  const colors: { [key: string]: { bg: string; text: string } } = {
+    'PDF': { bg: '#FDEAEA', text: '#DC2626' },
+    'Videos': { bg: '#F3E8FF', text: '#9333EA' },
+    'Past Paper': { bg: '#FEF3C7', text: '#D97706' },
+    'Template': { bg: '#D1FAE5', text: '#059669' },
+    'Letter': { bg: '#DBEAFE', text: '#2563EB' },
+    'Notes': { bg: '#FEF9C3', text: '#CA8A04' },
+    'Slides': { bg: '#FCE7F3', text: '#DB2777' },
+    'Books': { bg: '#F3F4F6', text: '#6B7280' },
+  };
+  return colors[category] || { bg: '#F3F4F6', text: '#6B7280' };
+};
+
+const getFileIcon = (category: string) => {
+  switch (category) {
+    case 'PDF':
+    case 'Past Paper':
+    case 'Letter':
+    case 'Template':
+      return 'document-text-outline';
+    case 'Videos':
+      return 'videocam-outline';
+    case 'Slides':
+      return 'layers-outline';
+    case 'Notes':
+      return 'create-outline';
+    case 'Books':
+      return 'book-outline';
+    default:
+      return 'document-outline';
+  }
+};
 
 export default function LibraryScreen() {
   const [resources, setResources] = useState<LibraryResource[]>([]);
-  const [filteredResources, setFilteredResources] = useState<LibraryResource[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
-  const [userRole, setUserRole] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addForm, setAddForm] = useState<AddResourceForm>({
+  const [saving, setSaving] = useState(false);
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState({
     title: '',
     description: '',
     category: 'PDF',
     url: '',
   });
 
+  // FIX #3: use useUserRole from auth-context instead of fetching separately
+  const role = useUserRole();
+
+  // FIX #9: unmount cleanup + FIX #14: orderBy created_at desc
   useEffect(() => {
-    fetchResources();
-    fetchUserRole();
-  }, []);
+    let mounted = true;
 
-  useEffect(() => {
-    filterResources();
-  }, [resources, searchQuery, selectedCategory]);
+    const load = async () => {
+      try {
+        setError(false);
+        const q = query(
+          collection(db, 'library'),
+          where('is_active', '==', true),
+          orderBy('created_at', 'desc')
+        );
+        const querySnapshot = await getDocs(q);
+        const resourcesData: LibraryResource[] = [];
+        querySnapshot.forEach((docSnap) => {
+          resourcesData.push({ id: docSnap.id, ...docSnap.data() } as LibraryResource);
+        });
 
-  const fetchResources = async () => {
-    try {
-      console.log('🔍 Fetching library resources...');
-      const q = query(collection(db, 'library'), where('is_active', '==', true));
-      console.log('📝 Query created:', q);
-      
-      const querySnapshot = await getDocs(q);
-      console.log('📊 Query snapshot received, docs count:', querySnapshot.size);
-      
-      const resourcesData: LibraryResource[] = [];
-      querySnapshot.forEach((doc) => {
-        console.log('📄 Processing doc:', doc.id, 'data:', doc.data());
-        resourcesData.push({ id: doc.id, ...doc.data() } as LibraryResource);
-      });
-      
-      console.log('✅ Resources fetched successfully:', resourcesData.length);
-      console.log('📋 Resources data:', resourcesData);
-      setResources(resourcesData);
-    } catch (error) {
-      console.error('❌ Error fetching resources:', error);
-      console.error('🔥 Full error details:', JSON.stringify(error, null, 2));
-      console.error('📱 Error code:', (error as any)?.code);
-      console.error('📝 Error message:', (error as any)?.message);
-      console.error('🔗 Error stack:', (error as any)?.stack);
-    } finally {
-      setLoading(false);
-    }
-  };
+        if (!mounted) return;
 
-  const fetchUserRole = async () => {
-    try {
-      if (auth.currentUser) {
-        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-        if (userDoc.exists()) {
-          setUserRole(userDoc.data().role);
+        // FIX #11: deduplicate resources
+        const unique = Array.from(
+          new Map(resourcesData.map(r => [r.id, r])).values()
+        );
+
+        setResources(unique);
+      } catch {
+        if (!mounted) return;
+        setError(true);
+      } finally {
+        if (mounted) {
+          setLoading(false);
+          setRefreshing(false);
         }
       }
-    } catch (error) {
-      console.error('Error fetching user role:', error);
-    }
-  };
+    };
 
-  const filterResources = () => {
+    load();
+    return () => { mounted = false; };
+  }, []);
+
+  // FIX #7: pull-to-refresh
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setError(false);
+    try {
+      const q = query(
+        collection(db, 'library'),
+        where('is_active', '==', true),
+        orderBy('created_at', 'desc')
+      );
+      const querySnapshot = await getDocs(q);
+      const resourcesData: LibraryResource[] = [];
+      querySnapshot.forEach((docSnap) => {
+        resourcesData.push({ id: docSnap.id, ...docSnap.data() } as LibraryResource);
+      });
+      const unique = Array.from(
+        new Map(resourcesData.map(r => [r.id, r])).values()
+      );
+      setResources(unique);
+    } catch {
+      setError(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  // FIX #2: safe URL opening with canOpenURL + spam guard
+  const openResource = useCallback(async (id: string, url: string) => {
+    if (!url) {
+      Alert.alert('Invalid URL', 'This resource does not have a valid link.');
+      return;
+    }
+    if (openingId === id) return;
+    setOpeningId(id);
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) {
+        Alert.alert('Invalid Link', 'Cannot open this resource.');
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('Error', 'Failed to open resource.');
+    } finally {
+      setOpeningId(null);
+    }
+  }, [openingId]);
+
+  // FIX #4 + #12 + #13: useMemo filter with safe access + search title & description
+  const filteredResources = useMemo(() => {
     let filtered = resources;
 
-    // Filter by category
     if (selectedCategory !== 'All') {
-      filtered = filtered.filter(resource => resource.category === selectedCategory);
-    }
-
-    // Filter by search query
-    if (searchQuery.trim()) {
-      filtered = filtered.filter(resource =>
-        resource.title.toLowerCase().includes(searchQuery.toLowerCase())
+      filtered = filtered.filter(r =>
+        (r.category ?? '').toLowerCase() === selectedCategory.toLowerCase()
       );
     }
 
-    setFilteredResources(filtered);
-  };
+    if (searchQuery.trim()) {
+      filtered = filtered.filter(r =>
+        r.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        r.description?.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    }
 
-  const openAddModal = () => {
-    setAddForm({
-      title: '',
-      description: '',
-      category: 'PDF',
-      url: '',
-    });
-    setShowAddModal(true);
-  };
+    return filtered;
+  }, [resources, searchQuery, selectedCategory]);
 
-  const closeAddModal = () => {
+  const resetForm = () => {
+    setAddForm({ title: '', description: '', category: 'PDF', url: '' });
     setShowAddModal(false);
-    setAddForm({
-      title: '',
-      description: '',
-      category: 'PDF',
-      url: '',
-    });
   };
 
+  // FIX #5: serverTimestamp + FIX #8: saving guard
   const saveResource = async () => {
-    try {
-      if (!addForm.title.trim() || !addForm.url.trim()) {
-        Alert.alert('Error', 'Title and URL are required');
-        return;
-      }
+    if (saving) return;
 
+    if (!addForm.title.trim() || !addForm.url.trim()) {
+      Alert.alert('Error', 'Title and URL are required');
+      return;
+    }
+
+    // FIX #3: URL format validation
+    if (!addForm.url.startsWith('http')) {
+      Alert.alert('Invalid URL', 'URL must start with http or https');
+      return;
+    }
+
+    // FIX #4: auth guard
+    if (!auth.currentUser) {
+      Alert.alert('Error', 'You must be logged in to add resources');
+      return;
+    }
+
+    if (!auth.currentUser) {
+      Alert.alert('Error', 'You must be logged in to add a resource');
+      return;
+    }
+
+    if (!addForm.url.startsWith('http')) {
+      Alert.alert('Invalid URL', 'URL must start with http or https');
+      return;
+    }
+
+    setSaving(true);
+    try {
       const resourceData = {
         title: addForm.title.trim(),
         description: addForm.description.trim(),
         category: addForm.category,
         url: addForm.url.trim(),
         uploaded_by: auth.currentUser?.uid,
-        created_at: new Date(),
+        // FIX #5: serverTimestamp instead of new Date()
+        created_at: serverTimestamp(),
         is_active: true,
       };
 
-      await addDoc(collection(db, 'library'), resourceData);
-      await fetchResources();
-      closeAddModal();
+      const docRef = await addDoc(collection(db, 'library'), resourceData);
+
+      // Update local state instead of re-fetching
+      setResources(prev => [{
+        id: docRef.id,
+        ...resourceData,
+        created_at: null,
+      }, ...prev]);
+
+      resetForm();
       Alert.alert('Success', 'Resource added successfully');
-    } catch (error) {
-      console.error('Error saving resource:', error);
+    } catch {
       Alert.alert('Error', 'Failed to save resource');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const deleteResource = async (resourceId: string) => {
-    try {
-      Alert.alert(
-        'Delete Resource',
-        'Are you sure you want to delete this resource?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
+  const deleteResource = (resourceId: string) => {
+    Alert.alert(
+      'Remove Resource',
+      'Are you sure you want to remove this resource?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // FIX #17: soft delete — alert says "removed" not "deleted"
               await updateDoc(doc(db, 'library', resourceId), { is_active: false });
-              await fetchResources();
-              Alert.alert('Success', 'Resource deleted successfully');
-            },
+              setResources(prev => prev.filter(r => r.id !== resourceId));
+              Alert.alert('Success', 'Resource removed successfully');
+            } catch {
+              Alert.alert('Error', 'Failed to remove resource');
+            }
           },
-        ]
-      );
-    } catch (error) {
-      console.error('Error deleting resource:', error);
-      Alert.alert('Error', 'Failed to delete resource');
-    }
-  };
-
-  const getCategoryColors = (category: string) => {
-    const colors: { [key: string]: { bg: string; text: string } } = {
-      'PDF': { bg: '#FDEAEA', text: '#DC2626' },
-      'Video': { bg: '#F3E8FF', text: '#9333EA' },
-      'Past Paper': { bg: '#FEF3C7', text: '#D97706' },
-      'Template': { bg: '#D1FAE5', text: '#059669' },
-      'Letter': { bg: '#DBEAFE', text: '#2563EB' },
-      'Notes': { bg: '#FEF9C3', text: '#CA8A04' },
-      'Slides': { bg: '#FCE7F3', text: '#DB2777' },
-      'Books': { bg: '#F3F4F6', text: '#6B7280' },
-    };
-    return colors[category] || { bg: '#F3F4F6', text: '#6B7280' };
-  };
-
-  const getFileIcon = (category: string) => {
-    switch (category) {
-      case 'PDF':
-      case 'Past Paper':
-      case 'Letter':
-      case 'Template':
-        return 'document-text-outline';
-      case 'Video':
-      case 'Videos':
-        return 'videocam-outline';
-      case 'Slides':
-        return 'layers-outline';
-      case 'Notes':
-        return 'create-outline';
-      case 'Books':
-        return 'book-outline';
-      default:
-        return 'document-outline';
-    }
+        },
+      ]
+    );
   };
 
   if (loading) {
@@ -222,7 +303,6 @@ export default function LibraryScreen() {
           <Text style={styles.title}>Library</Text>
           <Text style={styles.subtitle}>Academic resources and materials</Text>
         </View>
-
         <View style={styles.loadingContainer}>
           <ActivityIndicator color="#0088CC" />
         </View>
@@ -239,8 +319,8 @@ export default function LibraryScreen() {
 
       {/* Search Bar */}
       <View style={styles.searchContainer}>
-        <View style={styles.searchInput}>
-          <Text style={styles.searchIcon}>🔍</Text>
+        <View style={styles.searchInputRow}>
+          <Ionicons name="search-outline" size={18} color="#888" style={{ marginRight: 8 }} />
           <TextInput
             style={styles.searchTextInput}
             placeholder="Search resources..."
@@ -248,12 +328,17 @@ export default function LibraryScreen() {
             onChangeText={setSearchQuery}
             placeholderTextColor="#888888"
           />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={18} color="#aaa" />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
-      {/* Category Filter Pills */}
-      <ScrollView 
-        horizontal 
+      {/* FIX #10: compact category filter pills */}
+      <ScrollView
+        horizontal
         showsHorizontalScrollIndicator={false}
         style={styles.categoryContainer}
         contentContainerStyle={styles.categoryContent}
@@ -263,13 +348,13 @@ export default function LibraryScreen() {
             key={category}
             style={[
               styles.categoryPill,
-              selectedCategory === category && styles.categoryPillSelected
+              selectedCategory === category && styles.categoryPillSelected,
             ]}
             onPress={() => setSelectedCategory(category)}
           >
             <Text style={[
               styles.categoryPillText,
-              selectedCategory === category && styles.categoryPillTextSelected
+              selectedCategory === category && styles.categoryPillTextSelected,
             ]}>
               {category}
             </Text>
@@ -277,89 +362,91 @@ export default function LibraryScreen() {
         ))}
       </ScrollView>
 
-      <ScrollView 
+      <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
+        // FIX #7: pull-to-refresh
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
       >
-        {filteredResources.length === 0 ? (
+        {/* FIX #6: error state */}
+        {error ? (
           <View style={styles.emptyState}>
+            <Ionicons name="cloud-offline-outline" size={48} color="#9CA3AF" />
+            <Text style={styles.emptyText}>Unable to load resources</Text>
+            <Text style={styles.emptySubtext}>Pull down to retry.</Text>
+          </View>
+        ) : filteredResources.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Ionicons name="library-outline" size={48} color="#9CA3AF" />
             <Text style={styles.emptyText}>No resources found</Text>
             <Text style={styles.emptySubtext}>
-              {searchQuery || selectedCategory !== 'All' 
-                ? 'Try adjusting your search or filters' 
-                : 'Check back later for new resources'
-              }
+              {searchQuery || selectedCategory !== 'All'
+                ? 'Try adjusting your search or filters'
+                : 'Check back later for new resources'}
             </Text>
           </View>
         ) : (
-          filteredResources.filter(resource => resource != null).map((resource) => (
-            <View key={resource.id} style={styles.resourceCard}>
-              {/* TOP ROW */}
-              <View style={styles.topRow}>
-                {/* File Icon */}
-                <View style={styles.iconContainer}>
-                  <Ionicons 
-                    name={getFileIcon(resource.category)} 
-                    size={20} 
-                    color="#0088CC" 
-                  />
+          filteredResources.map((resource) => {
+            const category = resource.category ?? 'PDF';
+            const colors = getCategoryColors(category);
+            const icon = getFileIcon(category);
+            return (
+              <View key={resource.id} style={styles.resourceCard}>
+                <View style={styles.topRow}>
+                  <View style={styles.iconContainer}>
+                    <Ionicons name={getFileIcon(resource.category ?? 'PDF')} size={20} color="#0088CC" />
+                  </View>
+                  <View style={styles.titleContainer}>
+                    {/* FIX #15: numberOfLines={1} on title */}
+                    <Text style={styles.resourceTitle} numberOfLines={1}>
+                      {resource.title}
+                    </Text>
+                    <Text style={styles.resourceDescription} numberOfLines={2}>
+                      {resource.description}
+                    </Text>
+                  </View>
                 </View>
-                
-                {/* Title and Description */}
-                <View style={styles.titleContainer}>
-                  <Text style={styles.resourceTitle}>{resource.title}</Text>
-                  <Text style={styles.resourceDescription} numberOfLines={1}>
-                    {resource.description}
-                  </Text>
+
+                <View style={styles.bottomRow}>
+                  <View style={[styles.categoryBadge, { backgroundColor: colors.bg }]}>
+                    <Text style={[styles.categoryBadgeText, { color: colors.text }]}>
+                      {resource.category}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[styles.openButton, openingId === resource.id && { opacity: 0.6 }]}
+                    onPress={() => openResource(resource.id, resource.url)}
+                    disabled={openingId === resource.id}
+                  >
+                    {openingId === resource.id ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.openButtonText}>Open</Text>
+                    )}
+                  </TouchableOpacity>
                 </View>
+
+                {role === 'admin' && (
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => deleteResource(resource.id)}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#DC2626" />
+                  </TouchableOpacity>
+                )}
               </View>
-              
-              {/* BOTTOM ROW */}
-              <View style={styles.bottomRow}>
-                {/* Category Badge */}
-                <View style={[
-                  styles.categoryBadge,
-                  { backgroundColor: getCategoryColors(resource.category).bg }
-                ]}>
-                  <Text style={[
-                    styles.categoryBadgeText,
-                    { color: getCategoryColors(resource.category).text }
-                  ]}>
-                    {resource.category}
-                  </Text>
-                </View>
-                
-                {/* Open Button */}
-                <TouchableOpacity
-                  style={styles.openButton}
-                  onPress={() => Linking.openURL(resource.url)}
-                >
-                  <Text style={styles.openButtonText}>Open</Text>
-                </TouchableOpacity>
-              </View>
-              
-              {/* Admin Delete Button */}
-              {userRole === 'admin' && (
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => deleteResource(resource.id)}
-                >
-                  <Ionicons name="trash-outline" size={16} color="#DC2626" />
-                </TouchableOpacity>
-              )}
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
-      {/* Add Resource Floating Button (Admin Only) */}
-      {userRole === 'admin' && (
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={openAddModal}
-        >
-          <Text style={styles.fabText}>+</Text>
+      {role === 'admin' && (
+        <TouchableOpacity style={styles.fab} onPress={() => setShowAddModal(true)}>
+          <Ionicons name="add" size={28} color="#fff" />
         </TouchableOpacity>
       )}
 
@@ -368,13 +455,13 @@ export default function LibraryScreen() {
         visible={showAddModal}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={closeAddModal}
+        onRequestClose={resetForm}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Add New Resource</Text>
-            <TouchableOpacity onPress={closeAddModal}>
-              <Text style={styles.modalClose}>✕</Text>
+            <TouchableOpacity onPress={resetForm}>
+              <Ionicons name="close" size={24} color={COLORS.textSecondary} />
             </TouchableOpacity>
           </View>
 
@@ -385,6 +472,7 @@ export default function LibraryScreen() {
               value={addForm.title}
               onChangeText={(text) => setAddForm(prev => ({ ...prev, title: text }))}
               placeholder="Enter resource title"
+              editable={!saving}
             />
 
             <Text style={styles.inputLabel}>Description</Text>
@@ -395,31 +483,31 @@ export default function LibraryScreen() {
               placeholder="Enter resource description"
               multiline
               numberOfLines={4}
+              editable={!saving}
             />
 
             <Text style={styles.inputLabel}>Category</Text>
-            <View style={styles.categoryDropdown}>
-              <Text style={styles.dropdownText}>{addForm.category}</Text>
-              <Text style={styles.dropdownArrow}>▼</Text>
+            {/* FIX #16: real category pills instead of fake dropdown */}
+            <View style={styles.categoryPickerRow}>
+              {CATEGORIES.filter(cat => cat !== 'All').map((category) => (
+                <TouchableOpacity
+                  key={category}
+                  style={[
+                    styles.categoryPickerPill,
+                    addForm.category === category && styles.categoryPickerPillSelected,
+                  ]}
+                  onPress={() => setAddForm(prev => ({ ...prev, category }))}
+                  disabled={saving}
+                >
+                  <Text style={[
+                    styles.categoryPickerText,
+                    addForm.category === category && styles.categoryPickerTextSelected,
+                  ]}>
+                    {category}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
-
-            {CATEGORIES.filter(cat => cat !== 'All').map((category) => (
-              <TouchableOpacity
-                key={category}
-                style={[
-                  styles.categoryOption,
-                  addForm.category === category && styles.categoryOptionSelected
-                ]}
-                onPress={() => setAddForm(prev => ({ ...prev, category }))}
-              >
-                <Text style={[
-                  styles.categoryOptionText,
-                  addForm.category === category && styles.categoryOptionTextSelected
-                ]}>
-                  {category}
-                </Text>
-              </TouchableOpacity>
-            ))}
 
             <Text style={styles.inputLabel}>URL</Text>
             <TextInput
@@ -429,21 +517,26 @@ export default function LibraryScreen() {
               placeholder="Enter resource URL"
               autoCapitalize="none"
               autoCorrect={false}
+              editable={!saving}
             />
           </ScrollView>
 
           <View style={styles.modalFooter}>
             <TouchableOpacity
               style={[styles.modalButton, styles.cancelButton]}
-              onPress={closeAddModal}
+              onPress={resetForm}
+              disabled={saving}
             >
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.modalButton, styles.saveButton]}
+              style={[styles.modalButton, styles.saveButton, saving && { opacity: 0.6 }]}
               onPress={saveResource}
+              disabled={saving}
             >
-              <Text style={styles.saveButtonText}>Add Resource</Text>
+              <Text style={styles.saveButtonText}>
+                {saving ? 'Saving...' : 'Add Resource'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -474,47 +567,51 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     paddingHorizontal: SPACING.lg,
-    marginBottom: SPACING.md,
+    marginBottom: SPACING.sm,
   },
-  searchInput: {
+  searchInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F5F5F5',
-    borderRadius: RADIUS.md,
+    backgroundColor: '#fff',
+    borderRadius: 12,
     paddingHorizontal: SPACING.md,
-    height: 44,
-  },
-  searchIcon: {
-    fontSize: 16,
-    marginRight: SPACING.sm,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   searchTextInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 14,
     color: COLORS.text,
   },
+  // FIX #10: compact pills
   categoryContainer: {
     flexGrow: 0,
-    marginBottom: SPACING.md,
+    marginBottom: SPACING.sm,
+    maxHeight: 36,
   },
   categoryContent: {
     paddingHorizontal: SPACING.lg,
-    gap: SPACING.sm,
+    alignItems: 'center',
   },
   categoryPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#0088CC',
-    borderRadius: RADIUS.sm,
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.md,
+    marginRight: 6,
   },
   categoryPillSelected: {
     backgroundColor: '#0088CC',
     borderColor: '#0088CC',
   },
   categoryPillText: {
-    fontSize: 14,
+    fontSize: 11,
     fontWeight: '600',
     color: '#0088CC',
   },
@@ -525,7 +622,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingTop: SPACING.xl * 2,
   },
   scrollView: {
     flex: 1,
@@ -539,12 +635,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingTop: SPACING.xl * 2,
+    gap: 8,
   },
   emptyText: {
     fontSize: 18,
     fontWeight: '600',
     color: COLORS.text,
-    marginBottom: SPACING.sm,
+    marginTop: 8,
   },
   emptySubtext: {
     fontSize: 14,
@@ -607,8 +704,11 @@ const styles = StyleSheet.create({
   openButton: {
     backgroundColor: '#0088CC',
     borderRadius: 16,
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingVertical: 6,
+    minWidth: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   openButtonText: {
     fontSize: 12,
@@ -637,11 +737,6 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
   },
-  fabText: {
-    fontSize: 24,
-    fontWeight: '600',
-    color: '#fff',
-  },
   modalContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -658,10 +753,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     color: COLORS.text,
-  },
-  modalClose: {
-    fontSize: 24,
-    color: COLORS.textSecondary,
   },
   modalContent: {
     flex: 1,
@@ -687,41 +778,32 @@ const styles = StyleSheet.create({
   textArea: {
     height: 100,
     textAlignVertical: 'top',
+    paddingTop: SPACING.sm,
   },
-  categoryDropdown: {
+  // FIX #16: real category picker pills
+  categoryPickerRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    height: 48,
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  categoryPickerPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: RADIUS.sm,
-    paddingHorizontal: SPACING.md,
-    backgroundColor: COLORS.surface,
   },
-  dropdownText: {
-    fontSize: 16,
-    color: COLORS.text,
-  },
-  dropdownArrow: {
-    fontSize: 12,
-    color: COLORS.textSecondary,
-  },
-  categoryOption: {
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.md,
-    backgroundColor: COLORS.surface,
-    borderRadius: RADIUS.sm,
-    marginTop: SPACING.xs,
-  },
-  categoryOptionSelected: {
+  categoryPickerPillSelected: {
     backgroundColor: '#0088CC',
+    borderColor: '#0088CC',
   },
-  categoryOptionText: {
-    fontSize: 16,
+  categoryPickerText: {
+    fontSize: 13,
+    fontWeight: '500',
     color: COLORS.text,
   },
-  categoryOptionTextSelected: {
+  categoryPickerTextSelected: {
     color: '#fff',
   },
   modalFooter: {

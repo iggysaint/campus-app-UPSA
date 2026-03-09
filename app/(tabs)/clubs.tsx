@@ -1,14 +1,14 @@
-import { COLORS, RADIUS, SPACING } from '@/constants/theme';
-import { auth, db } from '@/lib/firebase';
+import { COLORS, SPACING } from '@/constants/theme';
+import { db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
-import { addDoc, collection, doc, getDoc, getDocs, updateDoc } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
+import { collection, getDocs, orderBy, query } from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
   Linking,
-  Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,168 +27,117 @@ interface Club {
   member_count?: number;
 }
 
-interface EditClubForm {
-  name: string;
-  description: string;
-  category: string;
-  whatsapp_link: string;
-  image_url: string;
-  member_count: string;
+const CATEGORY_FILTERS = ['All', 'Academic', 'Sports', 'Cultural', 'Professional', 'Social'];
+
+// Moved outside component — not recreated every render
+function getCategoryInitial(category?: string) {
+  return category ? category.charAt(0).toUpperCase() : '?';
 }
 
 export default function ClubsScreen() {
   const [clubs, setClubs] = useState<Club[]>([]);
   const [loading, setLoading] = useState(true);
-  const [userRole, setUserRole] = useState<string | null>(null);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [editingClub, setEditingClub] = useState<Club | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(false);
+  const [openingLink, setOpeningLink] = useState(false);
+  const [search, setSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('All');
 
-  const [editForm, setEditForm] = useState<EditClubForm>({
-    name: '',
-    description: '',
-    category: '',
-    whatsapp_link: '',
-    image_url: '',
-    member_count: '',
-  });
-
+  // FIX #1: Real unmount protection
   useEffect(() => {
-    fetchClubs();
-    fetchUserRole();
+    let mounted = true;
+
+    const load = async () => {
+      try {
+        setError(false);
+        const q = query(collection(db, 'clubs'), orderBy('name'));
+        const querySnapshot = await getDocs(q);
+
+        if (!mounted) return;
+
+        const clubsData: Club[] = querySnapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<Club, 'id'>),
+        }));
+
+        setClubs(clubsData);
+      } catch {
+        if (!mounted) return;
+        setError(true);
+      } finally {
+        if (mounted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    };
+
+    load();
+
+    return () => { mounted = false; };
   }, []);
 
-  const fetchClubs = async () => {
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setError(false);
     try {
-      const querySnapshot = await getDocs(collection(db, 'clubs'));
-
+      const q = query(collection(db, 'clubs'), orderBy('name'));
+      const querySnapshot = await getDocs(q);
       const clubsData: Club[] = querySnapshot.docs.map((docSnap) => ({
         id: docSnap.id,
         ...(docSnap.data() as Omit<Club, 'id'>),
       }));
-
       setClubs(clubsData);
-    } catch (error) {
-      console.error('Error fetching clubs:', error);
+    } catch {
+      setError(true);
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
-  };
+  }, []);
 
-  const fetchUserRole = async () => {
-    try {
-      if (!auth.currentUser) return;
-
-      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        setUserRole(userData?.role || null);
-      }
-    } catch (error) {
-      console.error('Error fetching user role:', error);
-    }
-  };
-
-  const handleJoinClub = (whatsappLink: string) => {
+  const handleJoinClub = useCallback(async (whatsappLink: string) => {
     if (!whatsappLink) {
-      Alert.alert('Invalid Link', 'This club does not have a valid WhatsApp link.');
+      Alert.alert('No Link', 'This club does not have a WhatsApp link yet.');
       return;
     }
-
-    Linking.openURL(whatsappLink);
-  };
-
-  const openEditModal = (club?: Club | null) => {
-    if (club) {
-      setEditingClub(club);
-
-      setEditForm({
-        name: club.name || '',
-        description: club.description || '',
-        category: club.category || '',
-        whatsapp_link: club.whatsapp_link || '',
-        image_url: club.image_url || '',
-        member_count: club.member_count?.toString() || '',
-      });
-    } else {
-      setEditingClub(null);
-
-      setEditForm({
-        name: '',
-        description: '',
-        category: '',
-        whatsapp_link: '',
-        image_url: '',
-        member_count: '',
-      });
-    }
-
-    setShowEditModal(true);
-  };
-
-  const closeEditModal = () => {
-    setShowEditModal(false);
-    setEditingClub(null);
-
-    setEditForm({
-      name: '',
-      description: '',
-      category: '',
-      whatsapp_link: '',
-      image_url: '',
-      member_count: '',
-    });
-  };
-
-  const saveClub = async () => {
-    if (!editForm.name.trim() || !editForm.description.trim()) {
-      Alert.alert('Missing Information', 'Please fill in the club name and description.');
-      return;
-    }
-
+    if (openingLink) return;
+    setOpeningLink(true);
     try {
-      const clubData = {
-        name: editForm.name.trim(),
-        description: editForm.description.trim(),
-        category: editForm.category.trim(),
-        whatsapp_link: editForm.whatsapp_link.trim(),
-        image_url: editForm.image_url.trim() || null,
-        member_count: Number(editForm.member_count) || 0,
-      };
-
-      if (editingClub) {
-        await updateDoc(doc(db, 'clubs', editingClub.id), clubData);
-
-        setClubs((prev) =>
-          prev.map((club) => (club.id === editingClub.id ? { ...club, ...clubData } : club))
-        );
-      } else {
-        const docRef = await addDoc(collection(db, 'clubs'), clubData);
-
-        setClubs((prev) => [...prev, { id: docRef.id, ...clubData }]);
+      const supported = await Linking.canOpenURL(whatsappLink);
+      if (!supported) {
+        Alert.alert('Invalid Link', 'Unable to open this link.');
+        return;
       }
-
-      closeEditModal();
-
-      Alert.alert('Success', editingClub ? 'Club updated successfully' : 'Club created successfully');
-    } catch (error) {
-      console.error('Error saving club:', error);
-      Alert.alert('Error', 'Failed to save club');
+      await Linking.openURL(whatsappLink);
+    } catch {
+      Alert.alert('Error', 'Could not open the WhatsApp link.');
+    } finally {
+      setOpeningLink(false);
     }
-  };
+  }, [openingLink]);
 
-  const getCategoryInitial = (category?: string) => {
-    return category ? category.charAt(0).toUpperCase() : '';
-  };
+  // FIX #2 + #5: Search + category filter with safe category access
+  const filteredClubs = useMemo(() => {
+    return clubs.filter(c => {
+      const matchesSearch =
+        c.name.toLowerCase().includes(search.toLowerCase()) ||
+        (c.category ?? '').toLowerCase().includes(search.toLowerCase());
+
+      const matchesCategory =
+        selectedCategory === 'All' ||
+        (c.category ?? '').toLowerCase() === selectedCategory.toLowerCase();
+
+      return matchesSearch && matchesCategory;
+    });
+  }, [clubs, search, selectedCategory]);
 
   if (loading) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.title}>Clubs & Societies</Text>
-          <Text style={styles.subtitle}>Join campus clubs and communities</Text>
+          <Text style={styles.title}>Clubs</Text>
+          <Text style={styles.subtitle}>Browse and join campus clubs here</Text>
         </View>
-
         <View style={styles.loadingContainer}>
           <ActivityIndicator color="#0088CC" />
         </View>
@@ -203,22 +152,87 @@ export default function ClubsScreen() {
         <Text style={styles.subtitle}>Browse and join campus clubs here</Text>
       </View>
 
+      {/* Search bar */}
+      <View style={styles.searchContainer}>
+        <Ionicons name="search-outline" size={18} color="#888" style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search clubs..."
+          placeholderTextColor="#aaa"
+          value={search}
+          onChangeText={setSearch}
+        />
+        {search.length > 0 && (
+          <TouchableOpacity onPress={() => setSearch('')}>
+            <Ionicons name="close-circle" size={18} color="#aaa" />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* FIX #5: Category filter pills */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filterScroll}
+        contentContainerStyle={styles.filterContent}
+      >
+        {CATEGORY_FILTERS.map((cat) => (
+          <TouchableOpacity
+            key={cat}
+            onPress={() => setSelectedCategory(cat)}
+            style={[
+              styles.filterPill,
+              selectedCategory === cat && styles.filterPillActive,
+            ]}
+          >
+            <Text style={[
+              styles.filterPillText,
+              selectedCategory === cat && styles.filterPillTextActive,
+            ]}>
+              {cat}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
       >
-        {clubs.length === 0 ? (
+        {error ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyText}>No clubs yet</Text>
-            <Text style={styles.emptySubtext}>Check back later for new clubs</Text>
+            <Ionicons name="cloud-offline-outline" size={48} color="#9CA3AF" />
+            <Text style={styles.emptyText}>Unable to load clubs</Text>
+            <Text style={styles.emptySubtext}>Pull down to retry.</Text>
+          </View>
+        ) : filteredClubs.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Ionicons name="people-outline" size={48} color="#9CA3AF" />
+            <Text style={styles.emptyText}>
+              {search.trim() || selectedCategory !== 'All' ? 'No clubs match your search' : 'No clubs yet'}
+            </Text>
+            <Text style={styles.emptySubtext}>
+              {search.trim() || selectedCategory !== 'All'
+                ? 'Try a different search or category'
+                : 'Check back later for new clubs'}
+            </Text>
           </View>
         ) : (
-          clubs.map((club) => (
+          filteredClubs.map((club) => (
             <View key={club.id} style={styles.clubCard}>
               <View style={styles.imageContainer}>
-                {club.image_url ? (
-                  <Image source={{ uri: club.image_url }} style={styles.clubImage} />
+                {/* FIX #3: image_url.trim() guard */}
+                {club.image_url && club.image_url.trim() ? (
+                  <Image
+                    source={{ uri: club.image_url.trim() }}
+                    style={styles.clubImage}
+                    resizeMode="cover"
+                    onError={() => {}}
+                  />
                 ) : (
                   <View style={styles.placeholderImage}>
                     <Text style={styles.placeholderText}>
@@ -226,21 +240,11 @@ export default function ClubsScreen() {
                     </Text>
                   </View>
                 )}
-
-                {userRole === 'admin' && (
-                  <TouchableOpacity
-                    style={styles.editIconOverlay}
-                    onPress={() => openEditModal(club)}
-                  >
-                    <Ionicons name="pencil" size={16} color="#fff" />
-                  </TouchableOpacity>
-                )}
               </View>
 
               <View style={styles.contentContainer}>
                 <View style={styles.nameRow}>
-                  <Text style={styles.clubName}>{club.name}</Text>
-
+                  <Text style={styles.clubName} numberOfLines={1}>{club.name}</Text>
                   <View style={styles.categoryBadge}>
                     <Text style={styles.categoryText}>{club.category}</Text>
                   </View>
@@ -258,11 +262,20 @@ export default function ClubsScreen() {
                     </Text>
                   </View>
 
+                  {/* FIX #4: Loading indicator on Join button */}
                   <TouchableOpacity
-                    style={styles.joinButton}
+                    style={[styles.joinButton, openingLink && styles.joinButtonDisabled]}
                     onPress={() => handleJoinClub(club.whatsapp_link)}
+                    disabled={openingLink}
                   >
-                    <Text style={styles.joinButtonText}>Join</Text>
+                    {openingLink ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <>
+                        <Ionicons name="logo-whatsapp" size={14} color="#fff" style={{ marginRight: 4 }} />
+                        <Text style={styles.joinButtonText}>Join</Text>
+                      </>
+                    )}
                   </TouchableOpacity>
                 </View>
               </View>
@@ -270,106 +283,6 @@ export default function ClubsScreen() {
           ))
         )}
       </ScrollView>
-
-      {userRole === 'admin' && (
-        <TouchableOpacity style={styles.fab} onPress={() => openEditModal()}>
-          <Text style={styles.fabText}>+</Text>
-        </TouchableOpacity>
-      )}
-
-      <Modal
-        visible={showEditModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-        onRequestClose={closeEditModal}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>
-              {editingClub ? 'Edit Club' : 'Add New Club'}
-            </Text>
-
-            <TouchableOpacity onPress={closeEditModal}>
-              <Text style={styles.modalClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView style={styles.modalContent}>
-            <Text style={styles.inputLabel}>Club Name</Text>
-            <TextInput
-              style={styles.input}
-              value={editForm.name}
-              onChangeText={(text) => setEditForm((prev) => ({ ...prev, name: text }))}
-              placeholder="Enter club name"
-            />
-
-            <Text style={styles.inputLabel}>Description</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              value={editForm.description}
-              onChangeText={(text) => setEditForm((prev) => ({ ...prev, description: text }))}
-              placeholder="Enter club description"
-              multiline
-              numberOfLines={4}
-            />
-
-            <Text style={styles.inputLabel}>Category</Text>
-            <TextInput
-              style={styles.input}
-              value={editForm.category}
-              onChangeText={(text) => setEditForm((prev) => ({ ...prev, category: text }))}
-              placeholder="Enter category"
-            />
-
-            <Text style={styles.inputLabel}>WhatsApp Link</Text>
-            <TextInput
-              style={styles.input}
-              value={editForm.whatsapp_link}
-              onChangeText={(text) =>
-                setEditForm((prev) => ({ ...prev, whatsapp_link: text }))
-              }
-              placeholder="Enter WhatsApp group link"
-            />
-
-            <Text style={styles.inputLabel}>Image URL</Text>
-            <TextInput
-              style={styles.input}
-              value={editForm.image_url}
-              onChangeText={(text) => setEditForm((prev) => ({ ...prev, image_url: text }))}
-              placeholder="Enter image URL (optional)"
-            />
-
-            <Text style={styles.inputLabel}>Member Count</Text>
-            <TextInput
-              style={styles.input}
-              value={editForm.member_count}
-              onChangeText={(text) =>
-                setEditForm((prev) => ({ ...prev, member_count: text }))
-              }
-              placeholder="Enter member count"
-              keyboardType="numeric"
-            />
-          </ScrollView>
-
-          <View style={styles.modalFooter}>
-            <TouchableOpacity
-              style={[styles.modalButton, styles.cancelButton]}
-              onPress={closeEditModal}
-            >
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.modalButton, styles.saveButton]}
-              onPress={saveClub}
-            >
-              <Text style={styles.saveButtonText}>
-                {editingClub ? 'Update' : 'Create'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -379,58 +292,103 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-
   header: {
     paddingHorizontal: SPACING.lg,
     paddingTop: 50,
     paddingBottom: SPACING.sm,
   },
-
   title: {
     fontSize: 18,
     fontWeight: '600',
     color: '#111111',
     marginBottom: SPACING.xs,
   },
-
   subtitle: {
     fontSize: 13,
     color: '#888888',
   },
-
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    marginHorizontal: SPACING.lg,
+    marginBottom: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: '#111',
+  },
+  filterScroll: {
+    marginBottom: SPACING.sm,
+    maxHeight: 36,
+  },
+  filterContent: {
+    paddingHorizontal: SPACING.lg,
+    gap: 6,
+    alignItems: 'center',
+  },
+  filterPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    marginRight: 6,
+  },
+  filterPillActive: {
+    backgroundColor: '#0088CC',
+    borderColor: '#0088CC',
+  },
+  filterPillText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#555',
+  },
+  filterPillTextActive: {
+    color: '#fff',
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   scrollView: {
     flex: 1,
   },
-
   scrollContent: {
     paddingHorizontal: SPACING.lg,
     paddingBottom: SPACING.xl,
   },
-
   emptyState: {
     justifyContent: 'center',
     alignItems: 'center',
     paddingTop: SPACING.xxl,
+    gap: 8,
   },
-
   emptyText: {
     fontSize: 18,
     fontWeight: '600',
     color: COLORS.text,
-    marginBottom: SPACING.sm,
+    marginTop: 8,
   },
-
   emptySubtext: {
     fontSize: 14,
     color: COLORS.textSecondary,
+    textAlign: 'center',
   },
-
   clubCard: {
     backgroundColor: '#fff',
     borderRadius: 16,
@@ -440,216 +398,90 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 4,
+    overflow: 'hidden',
   },
-
   imageContainer: {
     width: '100%',
     height: 140,
-    position: 'relative',
   },
-
   clubImage: {
     width: '100%',
     height: '100%',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
   },
-
   placeholderImage: {
     width: '100%',
     height: '100%',
     backgroundColor: '#0088CC',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   placeholderText: {
     fontSize: 48,
     fontWeight: '700',
     color: '#fff',
   },
-
-  editIconOverlay: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 12,
-    padding: 6,
-  },
-
   contentContainer: {
     padding: 12,
   },
-
   nameRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 8,
   },
-
   clubName: {
     fontSize: 16,
     fontWeight: '600',
     color: '#111111',
     flex: 1,
+    marginRight: 8,
   },
-
   categoryBadge: {
     backgroundColor: '#EAF5FD',
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-
   categoryText: {
     fontSize: 12,
     fontWeight: '500',
     color: '#0088CC',
   },
-
   clubDescription: {
     fontSize: 13,
     color: '#888888',
     lineHeight: 18,
     marginBottom: 12,
   },
-
   bottomRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-
   memberCount: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   memberText: {
     fontSize: 12,
     color: '#888888',
     marginLeft: 4,
   },
-
   joinButton: {
     backgroundColor: '#25D366',
     borderRadius: 20,
     paddingHorizontal: 16,
     paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 72,
+    justifyContent: 'center',
   },
-
+  joinButtonDisabled: {
+    opacity: 0.6,
+  },
   joinButtonText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-  },
-
-  fab: {
-    position: 'absolute',
-    bottom: SPACING.xl,
-    right: SPACING.lg,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#0088CC',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  fabText: {
-    fontSize: 24,
-    fontWeight: '600',
-    color: '#fff',
-  },
-
-  modalContainer: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: SPACING.lg,
-    paddingTop: 60,
-    paddingBottom: SPACING.md,
-  },
-
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-
-  modalClose: {
-    fontSize: 24,
-    color: COLORS.textSecondary,
-  },
-
-  modalContent: {
-    flex: 1,
-    paddingHorizontal: SPACING.lg,
-  },
-
-  inputLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: SPACING.sm,
-    marginTop: SPACING.md,
-  },
-
-  input: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: RADIUS.sm,
-    paddingHorizontal: SPACING.md,
-    fontSize: 16,
-    backgroundColor: COLORS.surface,
-  },
-
-  textArea: {
-    height: 100,
-    textAlignVertical: 'top',
-  },
-
-  modalFooter: {
-    flexDirection: 'row',
-    paddingHorizontal: SPACING.lg,
-    paddingBottom: SPACING.xl,
-    gap: SPACING.md,
-  },
-
-  modalButton: {
-    flex: 1,
-    height: 48,
-    borderRadius: RADIUS.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  cancelButton: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-
-  saveButton: {
-    backgroundColor: '#0088CC',
-  },
-
-  saveButtonText: {
-    fontSize: 16,
     fontWeight: '600',
     color: '#fff',
   },

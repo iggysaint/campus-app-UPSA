@@ -1,9 +1,10 @@
+import { useAuth, useUserRole } from '@/lib/auth-context';
 import { sendNotificationToAll } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { addDoc, collection, deleteDoc, doc, getDocs, orderBy, query, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Image, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { db } from '../../lib/firebase';
 
 type Club = {
@@ -18,8 +19,11 @@ type Club = {
 
 export default function AdminClubs() {
   const router = useRouter();
+  const { user } = useAuth();
+  const role = useUserRole();
   const [clubs, setClubs] = useState<Club[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingClub, setEditingClub] = useState<Club | null>(null);
   const [formData, setFormData] = useState({
@@ -27,7 +31,7 @@ export default function AdminClubs() {
     description: '',
     category: 'academic',
     whatsapp_link: '',
-    image_url: ''
+    image_url: '',
   });
 
   const categories = [
@@ -35,82 +39,15 @@ export default function AdminClubs() {
     { label: 'Sports', value: 'sports' },
     { label: 'Cultural', value: 'cultural' },
     { label: 'Professional', value: 'professional' },
-    { label: 'Social', value: 'social' }
+    { label: 'Social', value: 'social' },
   ];
 
-  useEffect(() => {
-    const fetchClubs = async () => {
-      try {
-        const querySnapshot = await getDocs(collection(db, 'clubs'));
-        const data: Club[] = [];
-        querySnapshot.forEach((doc) => {
-          const docData = doc.data();
-          data.push({
-            id: doc.id,
-            name: docData.name || '',
-            description: docData.description || '',
-            category: docData.category || 'academic',
-            whatsapp_link: docData.whatsapp_link || '',
-            image_url: docData.image_url || '',
-            created_at: docData.created_at
-          });
-        });
-        setClubs(data.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
-      } catch (error) {
-        console.error('Error fetching clubs:', error);
-        Alert.alert('Error', 'Failed to load clubs');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchClubs();
-  }, []);
-
-  const handleSave = async () => {
-    if (!formData.name.trim()) {
-      Alert.alert('Error', 'Please enter a club name');
-      return;
-    }
-
+  // FIX #3: Extracted reusable fetchClubs function
+  // FIX #11: orderBy in query — no manual sorting needed
+  const fetchClubs = useCallback(async () => {
     try {
-      if (editingClub) {
-        // Update existing club
-        await updateDoc(doc(db, 'clubs', editingClub.id), {
-          name: formData.name.trim(),
-          description: formData.description.trim(),
-          category: formData.category,
-          whatsapp_link: formData.whatsapp_link.trim(),
-          image_url: formData.image_url.trim()
-        });
-        Alert.alert('Success', 'Club updated successfully!');
-      } else {
-        // Create new club
-        await addDoc(collection(db, 'clubs'), {
-          name: formData.name.trim(),
-          description: formData.description.trim(),
-          category: formData.category,
-          whatsapp_link: formData.whatsapp_link.trim(),
-          image_url: formData.image_url.trim(),
-          created_at: serverTimestamp()
-        });
-        
-        // Send push notification to all users
-        await sendNotificationToAll(
-          '🎉 New Club',
-          `${formData.name} has been added!`,
-          { type: 'club' }
-        );
-        
-        Alert.alert('Success', 'Club created successfully!');
-      }
-
-      setModalVisible(false);
-      setFormData({ name: '', description: '', category: 'academic', whatsapp_link: '', image_url: '' });
-      setEditingClub(null);
-      
-      // Refresh the list
-      const querySnapshot = await getDocs(collection(db, 'clubs'));
+      const q = query(collection(db, 'clubs'), orderBy('created_at', 'desc'));
+      const querySnapshot = await getDocs(q);
       const data: Club[] = [];
       querySnapshot.forEach((doc) => {
         const docData = doc.data();
@@ -121,13 +58,113 @@ export default function AdminClubs() {
           category: docData.category || 'academic',
           whatsapp_link: docData.whatsapp_link || '',
           image_url: docData.image_url || '',
-          created_at: docData.created_at
+          created_at: docData.created_at,
         });
       });
-      setClubs(data.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
+      setClubs(data);
+    } catch (error) {
+      console.error('Error fetching clubs:', error);
+      Alert.alert('Error', 'Failed to load clubs');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // FIX #5: Admin role check — redirect non-admins away
+    if (role && role !== 'admin') {
+      router.replace('/(tabs)');
+      return;
+    }
+    fetchClubs();
+  }, [role, fetchClubs]);
+
+  // FIX #2: formatDate with full crash guard
+  const formatDate = (timestamp: any) => {
+    if (!timestamp || !timestamp.toDate) return '';
+    try {
+      const date = timestamp.toDate();
+      return date.toLocaleDateString();
+    } catch {
+      return '';
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({ name: '', description: '', category: 'academic', whatsapp_link: '', image_url: '' });
+    setEditingClub(null);
+    setModalVisible(false);
+  };
+
+  const handleSave = async () => {
+    // FIX #4: Loading guard — prevents duplicate saves
+    if (saving) return;
+
+    if (!formData.name.trim()) {
+      Alert.alert('Error', 'Please enter a club name');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (editingClub) {
+        await updateDoc(doc(db, 'clubs', editingClub.id), {
+          name: formData.name.trim(),
+          description: formData.description.trim(),
+          category: formData.category,
+          whatsapp_link: formData.whatsapp_link.trim(),
+          image_url: formData.image_url.trim(),
+        });
+
+        // FIX #9: Update local state instead of re-fetching
+        setClubs(prev => prev.map(c =>
+          c.id === editingClub.id
+            ? { ...c, ...formData, name: formData.name.trim(), description: formData.description.trim() }
+            : c
+        ));
+
+        Alert.alert('Success', 'Club updated successfully!');
+      } else {
+        const docRef = await addDoc(collection(db, 'clubs'), {
+          name: formData.name.trim(),
+          description: formData.description.trim(),
+          category: formData.category,
+          whatsapp_link: formData.whatsapp_link.trim(),
+          image_url: formData.image_url.trim(),
+          created_at: serverTimestamp(),
+        });
+
+        // FIX #9: Update local state instead of re-fetching
+        setClubs(prev => [{
+          id: docRef.id,
+          name: formData.name.trim(),
+          description: formData.description.trim(),
+          category: formData.category,
+          whatsapp_link: formData.whatsapp_link.trim(),
+          image_url: formData.image_url.trim(),
+          created_at: null,
+        }, ...prev]);
+
+        // FIX #6: Notification failure wrapped separately — won't affect save success
+        try {
+          await sendNotificationToAll(
+            '🎉 New Club',
+            `${formData.name} has been added!`,
+            { type: 'club' }
+          );
+        } catch (notifError) {
+          console.error('Notification failed (club still created):', notifError);
+        }
+
+        Alert.alert('Success', 'Club created successfully!');
+      }
+
+      resetForm();
     } catch (error) {
       console.error('Error saving club:', error);
       Alert.alert('Error', 'Failed to save club');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -138,7 +175,7 @@ export default function AdminClubs() {
       description: club.description,
       category: club.category,
       whatsapp_link: club.whatsapp_link,
-      image_url: club.image_url
+      image_url: club.image_url,
     });
     setModalVisible(true);
   };
@@ -155,14 +192,15 @@ export default function AdminClubs() {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, 'clubs', club.id));
-              setClubs(clubs.filter(c => c.id !== club.id));
+              // FIX #9: Update local state instead of re-fetching
+              setClubs(prev => prev.filter(c => c.id !== club.id));
               Alert.alert('Success', 'Club deleted successfully!');
             } catch (error) {
               console.error('Error deleting club:', error);
               Alert.alert('Error', 'Failed to delete club');
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
@@ -178,25 +216,16 @@ export default function AdminClubs() {
     }
   };
 
-  const getCategoryColor = (category: string) => {
+  // FIX #7: Separated bg and text colors — can't combine on single component
+  const getCategoryColors = (category: string) => {
     switch (category) {
-      case 'academic': return 'bg-blue-100 text-blue-700';
-      case 'sports': return 'bg-green-100 text-green-700';
-      case 'cultural': return 'bg-purple-100 text-purple-700';
-      case 'professional': return 'bg-gray-100 text-gray-700';
-      case 'social': return 'bg-orange-100 text-orange-700';
-      default: return 'bg-gray-100 text-gray-700';
+      case 'academic': return { bg: '#DBEAFE', text: '#1D4ED8' };
+      case 'sports': return { bg: '#DCFCE7', text: '#15803D' };
+      case 'cultural': return { bg: '#F3E8FF', text: '#7E22CE' };
+      case 'professional': return { bg: '#F3F4F6', text: '#374151' };
+      case 'social': return { bg: '#FFEDD5', text: '#C2410C' };
+      default: return { bg: '#F3F4F6', text: '#374151' };
     }
-  };
-
-  const formatDate = (timestamp: any) => {
-    if (!timestamp) return '';
-    const date = timestamp.toDate();
-    return date.toLocaleDateString();
-  };
-
-  const handleBack = () => {
-    router.push('/admin');
   };
 
   if (loading) {
@@ -208,84 +237,106 @@ export default function AdminClubs() {
   }
 
   return (
+    // FIX #8: Wrap in flex-1 View so FAB positions correctly
     <View className="flex-1 bg-[#F2F4F6]">
-      <View className="pt-12 pb-8">
-        {/* Header */}
-        <View className="flex-row items-center justify-between px-6 mb-8">
-          <TouchableOpacity
-            onPress={handleBack}
-            className="p-2"
-          >
+      <View className="pt-12 pb-4 px-6">
+        <View className="flex-row items-center justify-between mb-4">
+          <TouchableOpacity onPress={() => router.push('/admin')} className="p-2">
             <Ionicons name="arrow-back" size={24} color="#0088CC" />
           </TouchableOpacity>
           <Text className="text-xl font-bold text-slate-900">Manage Campus Clubs</Text>
           <View className="w-12" />
         </View>
-
-        {/* Content */}
-        <ScrollView showsVerticalScrollIndicator={false} className="px-6">
-          {clubs.map((club) => (
-            <View key={club.id} className="mb-4 bg-white rounded-xl p-4 shadow-sm">
-              <View className="flex-row justify-between items-start mb-3">
-                <View className="flex-1">
-                  <View className="flex-row items-center mb-2">
-                    <View className="w-12 h-12 items-center justify-center rounded-lg bg-blue-100">
-                      <Ionicons name={getCategoryIcon(club.category)} size={20} color="#0088CC" />
-                    </View>
-                    <Text className={`text-xs px-2 py-1 rounded-full ${getCategoryColor(club.category)}`}>
-                      {club.category.toUpperCase()}
-                    </Text>
-                    <Text className="text-xs text-slate-500 ml-2">
-                      • {formatDate(club.created_at)}
-                    </Text>
-                  </View>
-                  <Text className="text-lg font-semibold text-slate-900 mb-1">
-                    {club.name}
-                  </Text>
-                  <Text className="text-sm text-slate-600 line-clamp-2">
-                    {club.description}
-                  </Text>
-                </View>
-                <View className="flex-row gap-2">
-                  <TouchableOpacity
-                    onPress={() => handleEdit(club)}
-                    className="p-2 rounded-lg bg-blue-500"
-                  >
-                    <Ionicons name="create-outline" size={16} color="#fff" />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleDelete(club)}
-                    className="p-2 rounded-lg bg-red-500"
-                  >
-                    <Ionicons name="trash-outline" size={16} color="#fff" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-
-        {/* Floating Action Button */}
-        <TouchableOpacity
-          onPress={() => setModalVisible(true)}
-          className="absolute bottom-8 right-6 w-14 h-14 bg-primary rounded-full shadow-lg items-center justify-center"
-        >
-          <Ionicons name="add" size={24} color="#fff" />
-        </TouchableOpacity>
       </View>
+
+      {/* FIX #10: Empty state UI */}
+      {clubs.length === 0 ? (
+        <View className="flex-1 items-center justify-center px-6">
+          <Ionicons name="people-outline" size={48} color="#9CA3AF" />
+          <Text className="mt-4 text-lg font-semibold text-slate-700">No clubs yet</Text>
+          <Text className="mt-1 text-sm text-slate-500 text-center">
+            Tap the + button to add the first club.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} className="flex-1 px-6">
+          <View className="pb-24">
+            {clubs.map((club) => {
+              const colors = getCategoryColors(club.category);
+              return (
+                <View key={club.id} className="mb-4 bg-white rounded-xl overflow-hidden shadow-sm">
+                  {!!club.image_url && (
+                    <Image
+                      source={{ uri: club.image_url }}
+                      className="w-full h-40"
+                      resizeMode="cover"
+                    />
+                  )}
+                  <View className="p-4">
+                  <View className="flex-row justify-between items-start mb-3">
+                    <View className="flex-1">
+                      <View className="flex-row items-center mb-2 gap-2">
+                        <View className="w-10 h-10 items-center justify-center rounded-lg bg-blue-100">
+                          <Ionicons name={getCategoryIcon(club.category)} size={18} color="#0088CC" />
+                        </View>
+                        {/* FIX #7: bg on View, text on Text separately */}
+                        <View className="px-2 py-1 rounded-full" style={{ backgroundColor: colors.bg }}>
+                          <Text className="text-xs font-medium" style={{ color: colors.text }}>
+                            {club.category.toUpperCase()}
+                          </Text>
+                        </View>
+                        {formatDate(club.created_at) ? (
+                          <Text className="text-xs text-slate-500">
+                            • {formatDate(club.created_at)}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text className="text-lg font-semibold text-slate-900 mb-1">
+                        {club.name}
+                      </Text>
+                      <Text className="text-sm text-slate-600" numberOfLines={2}>
+                        {club.description}
+                      </Text>
+                    </View>
+                    <View className="flex-row gap-2 ml-2">
+                      <TouchableOpacity
+                        onPress={() => handleEdit(club)}
+                        className="p-2 rounded-lg bg-blue-500"
+                      >
+                        <Ionicons name="create-outline" size={16} color="#fff" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => handleDelete(club)}
+                        className="p-2 rounded-lg bg-red-500"
+                      >
+                        <Ionicons name="trash-outline" size={16} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </ScrollView>
+      )}
+
+      {/* FIX #8: FAB correctly positioned in flex-1 container */}
+      <TouchableOpacity
+        onPress={() => setModalVisible(true)}
+        className="absolute bottom-8 right-6 w-14 h-14 bg-[#0088CC] rounded-full shadow-lg items-center justify-center"
+      >
+        <Ionicons name="add" size={28} color="#fff" />
+      </TouchableOpacity>
 
       {/* Add/Edit Club Modal */}
       <Modal
         visible={modalVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => {
-          setModalVisible(false);
-          setEditingClub(null);
-          setFormData({ name: '', description: '', category: 'academic', whatsapp_link: '', image_url: '' });
-        }}
+        onRequestClose={resetForm}
       >
-        <KeyboardAvoidingView 
+        <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           className="flex-1"
         >
@@ -304,6 +355,7 @@ export default function AdminClubs() {
                     value={formData.name}
                     onChangeText={(text) => setFormData({ ...formData, name: text })}
                     placeholder="Enter club name"
+                    editable={!saving}
                   />
                 </View>
 
@@ -317,6 +369,7 @@ export default function AdminClubs() {
                     placeholder="Enter club description"
                     multiline
                     textAlignVertical="top"
+                    editable={!saving}
                   />
                 </View>
 
@@ -328,9 +381,10 @@ export default function AdminClubs() {
                       <TouchableOpacity
                         key={cat.value}
                         onPress={() => setFormData({ ...formData, category: cat.value })}
+                        disabled={saving}
                         className={`px-3 py-2 rounded-lg border ${
                           formData.category === cat.value
-                            ? 'bg-primary border-primary'
+                            ? 'bg-[#0088CC] border-[#0088CC]'
                             : 'bg-gray-100 border-gray-300'
                         }`}
                       >
@@ -352,6 +406,7 @@ export default function AdminClubs() {
                     value={formData.whatsapp_link}
                     onChangeText={(text) => setFormData({ ...formData, whatsapp_link: text })}
                     placeholder="Enter WhatsApp group link"
+                    editable={!saving}
                   />
                 </View>
 
@@ -363,6 +418,7 @@ export default function AdminClubs() {
                     value={formData.image_url}
                     onChangeText={(text) => setFormData({ ...formData, image_url: text })}
                     placeholder="Enter image URL (optional)"
+                    editable={!saving}
                   />
                 </View>
 
@@ -370,21 +426,19 @@ export default function AdminClubs() {
                 <View className="flex-row gap-3">
                   <TouchableOpacity
                     className="flex-1 rounded-lg bg-gray-200 p-3"
-                    onPress={() => {
-                      setModalVisible(false);
-                      setEditingClub(null);
-                      setFormData({ name: '', description: '', category: 'academic', whatsapp_link: '', image_url: '' });
-                    }}
+                    onPress={resetForm}
+                    disabled={saving}
                   >
                     <Text className="text-center font-medium text-slate-700">Cancel</Text>
                   </TouchableOpacity>
-                  
+
                   <TouchableOpacity
-                    className="flex-1 rounded-lg bg-primary p-3"
+                    className={`flex-1 rounded-lg p-3 ${saving ? 'bg-[#0088CC]/50' : 'bg-[#0088CC]'}`}
                     onPress={handleSave}
+                    disabled={saving}
                   >
                     <Text className="text-center font-medium text-white">
-                      {editingClub ? 'Update' : 'Create'}
+                      {saving ? 'Saving...' : editingClub ? 'Update' : 'Create'}
                     </Text>
                   </TouchableOpacity>
                 </View>

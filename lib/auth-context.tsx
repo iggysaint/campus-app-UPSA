@@ -1,4 +1,4 @@
-import { auth } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { checkRateLimit, RateLimitError } from '@/lib/rate-limit';
 import { validateLoginCredentials } from '@/lib/validation';
 import type { UserProfile, UserRole } from '@/types';
@@ -9,6 +9,7 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword
 } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
 interface AuthState {
@@ -28,21 +29,33 @@ interface AuthContextValue extends AuthState {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// Now reads actual role from Firestore instead of hardcoding 'student'
 async function fetchProfile(userId: string, fallbackEmail?: string, fallbackName?: string): Promise<UserProfile | null> {
   try {
-    // For now, return a synthetic profile since we don't have a profiles table in Firebase
-    // This can be extended later to use Firestore
-    if (fallbackEmail) {
+    const userDoc = await getDoc(doc(db, 'users', userId));
+    if (userDoc.exists()) {
+      const data = userDoc.data();
       return {
         id: userId,
-        email: fallbackEmail,
-        full_name: fallbackName ?? undefined,
-        role: 'student',
+        email: data.email || fallbackEmail || '',
+        full_name: data.full_name || fallbackName,
+        role: data.role || 'student',
       };
     }
-    return null;
+    // Fallback if no Firestore doc exists
+    return {
+      id: userId,
+      email: fallbackEmail || '',
+      full_name: fallbackName,
+      role: 'student',
+    };
   } catch {
-    return null;
+    return {
+      id: userId,
+      email: fallbackEmail || '',
+      full_name: fallbackName,
+      role: 'student',
+    };
   }
 }
 
@@ -99,7 +112,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signInWithEmail = useCallback(async (email: string, password: string) => {
-    // Validate and rate-limit login attempts before hitting Firebase.
     const validation = validateLoginCredentials({ email, password });
     if (!validation.ok) {
       return { error: new Error(validation.errors[0]) };
@@ -117,7 +129,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await signInWithEmailAndPassword(auth, email.trim(), password);
       return { error: null };
     } catch (error: any) {
-      // Handle Firebase auth errors
       if (error.code === 'auth/too-many-requests') {
         return { error: new RateLimitError() };
       }
@@ -127,7 +138,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signUpWithEmail = useCallback(
     async (email: string, password: string, fullName?: string) => {
-      // Reuse the same credential constraints for signup.
       const validation = validateLoginCredentials({ email, password });
       if (!validation.ok) {
         return { error: new Error(validation.errors[0]) };
@@ -143,8 +153,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         await createUserWithEmailAndPassword(auth, email.trim(), password);
-        // Note: Firebase doesn't support setting displayName during signup
-        // This would need to be handled separately after signup
         return { error: null };
       } catch (error: any) {
         return { error: error as Error };
@@ -154,15 +162,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signInWithGoogle = useCallback(async () => {
-    // Rate-limit OAuth attempts as well, using a coarse anonymous key.
     try {
       checkRateLimit({ key: 'auth:google', limit: 20 });
     } catch (err) {
       return { error: err as Error };
     }
-
-    // Google sign-in would need additional Firebase configuration
-    // For now, return an error indicating it's not implemented
     return { error: new Error('Google sign-in not yet implemented') };
   }, []);
 
