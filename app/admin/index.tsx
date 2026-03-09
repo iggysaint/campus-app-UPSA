@@ -63,8 +63,8 @@ export default function AdminDashboard() {
   };
 
   const handleBack = () => {
-    router.push('/admin');
-  };
+   router.back(); // ✅ goes back to previous screen
+};
 
   return (
     <View className="flex-1 bg-[#F2F4F6]">

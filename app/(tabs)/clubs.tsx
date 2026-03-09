@@ -345,7 +345,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: '#fff',
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: '#0088CC',
     marginRight: 6,
   },
   filterPillActive: {
@@ -354,8 +354,8 @@ const styles = StyleSheet.create({
   },
   filterPillText: {
     fontSize: 11,
-    fontWeight: '500',
-    color: '#555',
+    fontWeight: '600',
+    color: '#0088CC',
   },
   filterPillTextActive: {
     color: '#fff',

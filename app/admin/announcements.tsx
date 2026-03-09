@@ -3,8 +3,8 @@ import { sendNotificationToAll } from '@/lib/notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, doc, getDocs, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 type Announcement = {
   id: string;
@@ -16,10 +16,43 @@ type Announcement = {
   is_active: boolean;
 };
 
+const categories = [
+  { label: 'General', value: 'general' },
+  { label: 'Academic', value: 'academic' },
+  { label: 'Urgent', value: 'urgent' },
+  { label: 'Event', value: 'event' }
+];
+
+const audiences = [
+  { label: 'All Users', value: 'all' },
+  { label: 'Students Only', value: 'students' },
+  { label: 'Staff Only', value: 'staff' }
+];
+
+const getCategoryColor = (category: string) => {
+  switch (category) {
+    case 'urgent': return 'bg-red-100 text-red-700';
+    case 'academic': return 'bg-blue-100 text-blue-700';
+    case 'event': return 'bg-green-100 text-green-700';
+    default: return 'bg-gray-100 text-gray-700';
+  }
+};
+
+// FIX: crash guard
+const formatDate = (timestamp: any) => {
+  if (!timestamp?.toDate) return '';
+  try {
+    return timestamp.toDate().toLocaleDateString();
+  } catch {
+    return '';
+  }
+};
+
 export default function AdminAnnouncements() {
   const router = useRouter();
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingAnnouncement, setEditingAnnouncement] = useState<Announcement | null>(null);
   const [formData, setFormData] = useState({
@@ -29,108 +62,90 @@ export default function AdminAnnouncements() {
     target_audience: 'all'
   });
 
-  const categories = [
-    { label: 'General', value: 'general' },
-    { label: 'Academic', value: 'academic' },
-    { label: 'Urgent', value: 'urgent' },
-    { label: 'Event', value: 'event' }
-  ];
-
-  const audiences = [
-    { label: 'All Users', value: 'all' },
-    { label: 'Students Only', value: 'students' },
-    { label: 'Staff Only', value: 'staff' }
-  ];
-
-  useEffect(() => {
-    const fetchAnnouncements = async () => {
-      try {
-        const querySnapshot = await getDocs(collection(db, 'announcements'));
-        const data: Announcement[] = [];
-        querySnapshot.forEach((doc) => {
-          const docData = doc.data();
-          data.push({
-            id: doc.id,
-            title: docData.title || '',
-            body: docData.body || '',
-            category: docData.category || 'general',
-            target_audience: docData.target_audience || 'all',
-            created_at: docData.created_at,
-            is_active: docData.is_active !== false
-          });
+  // FIX: extracted as useCallback
+  const fetchAnnouncements = useCallback(async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'announcements'));
+      const data: Announcement[] = [];
+      querySnapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        data.push({
+          id: docSnap.id,
+          title: d.title || '',
+          body: d.body || '',
+          category: d.category || 'general',
+          target_audience: d.target_audience || 'all',
+          created_at: d.created_at,
+          is_active: d.is_active !== false,
         });
-        setAnnouncements(data.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
-      } catch (error) {
-        console.error('Error fetching announcements:', error);
-        Alert.alert('Error', 'Failed to load announcements');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchAnnouncements();
+      });
+      // FIX: sort fix
+      setAnnouncements(
+        data.sort((a, b) => (b.created_at?.toMillis?.() || 0) - (a.created_at?.toMillis?.() || 0))
+      );
+    } catch {
+      Alert.alert('Error', 'Failed to load announcements');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchAnnouncements();
+  }, [fetchAnnouncements]);
+
+  const resetForm = () => {
+    setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
+    setEditingAnnouncement(null);
+    setModalVisible(false);
+  };
+
   const handleSave = async () => {
+    // FIX: saving guard
+    if (saving) return;
+
     if (!formData.title.trim() || !formData.body.trim()) {
       Alert.alert('Error', 'Please fill in all required fields');
       return;
     }
 
+    setSaving(true);
     try {
       if (editingAnnouncement) {
-        // Update existing announcement
         await updateDoc(doc(db, 'announcements', editingAnnouncement.id), {
           title: formData.title.trim(),
           body: formData.body.trim(),
           category: formData.category,
-          target_audience: formData.target_audience
+          target_audience: formData.target_audience,
         });
         Alert.alert('Success', 'Announcement updated successfully!');
       } else {
-        // Create new announcement
         await addDoc(collection(db, 'announcements'), {
           title: formData.title.trim(),
           body: formData.body.trim(),
           category: formData.category,
           target_audience: formData.target_audience,
           created_at: serverTimestamp(),
-          is_active: true
+          is_active: true,
         });
-        
-        // Send push notification to all users
-        await sendNotificationToAll(
-          '📢 New Announcement',
-          formData.title,
-          { type: 'announcement' }
-        );
-        
+
+        try {
+          await sendNotificationToAll(
+            '📢 New Announcement',
+            formData.title,
+            { type: 'announcement' }
+          );
+        } catch {}
+
         Alert.alert('Success', 'Announcement created successfully!');
       }
 
-      setModalVisible(false);
-      setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
-      setEditingAnnouncement(null);
-      
-      // Refresh the list
-      const querySnapshot = await getDocs(collection(db, 'announcements'));
-      const data: Announcement[] = [];
-      querySnapshot.forEach((doc) => {
-        const docData = doc.data();
-        data.push({
-          id: doc.id,
-          title: docData.title || '',
-          body: docData.body || '',
-          category: docData.category || 'general',
-          target_audience: docData.target_audience || 'all',
-          created_at: docData.created_at,
-          is_active: docData.is_active !== false
-        });
-      });
-      setAnnouncements(data.sort((a, b) => b.created_at?.toMillis() - a.created_at?.toMillis()).reverse());
-    } catch (error) {
-      console.error('Error saving announcement:', error);
+      resetForm();
+      await fetchAnnouncements();
+    } catch {
       Alert.alert('Error', 'Failed to save announcement');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -140,7 +155,7 @@ export default function AdminAnnouncements() {
       title: announcement.title,
       body: announcement.body,
       category: announcement.category,
-      target_audience: announcement.target_audience
+      target_audience: announcement.target_audience,
     });
     setModalVisible(true);
   };
@@ -157,67 +172,50 @@ export default function AdminAnnouncements() {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, 'announcements', announcement.id));
-              setAnnouncements(announcements.filter(a => a.id !== announcement.id));
+              setAnnouncements(prev => prev.filter(a => a.id !== announcement.id));
               Alert.alert('Success', 'Announcement deleted successfully!');
-            } catch (error) {
-              console.error('Error deleting announcement:', error);
+            } catch {
               Alert.alert('Error', 'Failed to delete announcement');
             }
-          }
-        }
+          },
+        },
       ]
     );
-  };
-
-  const handleBack = () => {
-    router.push('/admin');
-  };
-
-  const getCategoryColor = (category: string) => {
-    switch (category) {
-      case 'urgent': return 'bg-red-100 text-red-700';
-      case 'academic': return 'bg-blue-100 text-blue-700';
-      case 'event': return 'bg-green-100 text-green-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
-
-  const formatDate = (timestamp: any) => {
-    if (!timestamp) return '';
-    const date = timestamp.toDate();
-    return date.toLocaleDateString();
   };
 
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center bg-[#F2F4F6]">
-        <Text className="text-slate-500">Loading announcements...</Text>
+        <ActivityIndicator color="#0088CC" />
+        <Text className="text-slate-500 mt-2">Loading announcements...</Text>
       </View>
     );
   }
 
   return (
     <View className="flex-1 bg-[#F2F4F6]">
-      <View className="pt-12 pb-8">
-        {/* Header */}
-        <View className="flex-row items-center justify-between px-6 mb-8">
-          <TouchableOpacity
-            onPress={handleBack}
-            className="p-2"
-          >
-            <Ionicons name="arrow-back" size={24} color="#0088CC" />
-          </TouchableOpacity>
-          <Text className="text-xl font-bold text-slate-900">Manage Announcements</Text>
-          <View className="w-12" />
-        </View>
+      <View className="pt-12 pb-4 px-6 flex-row items-center justify-between">
+        {/* FIX: router.back() instead of router.push('/admin') */}
+        <TouchableOpacity onPress={() => router.back()} className="p-2">
+          <Ionicons name="arrow-back" size={24} color="#0088CC" />
+        </TouchableOpacity>
+        <Text className="text-xl font-bold text-slate-900">Manage Announcements</Text>
+        <View className="w-12" />
+      </View>
 
-        {/* Content */}
-        <ScrollView showsVerticalScrollIndicator={false} className="px-6">
+      {announcements.length === 0 ? (
+        <View className="flex-1 items-center justify-center">
+          <Ionicons name="megaphone-outline" size={48} color="#9CA3AF" />
+          <Text className="text-slate-500 mt-4 font-medium">No announcements yet.</Text>
+          <Text className="text-slate-400 text-sm">Tap + to create one.</Text>
+        </View>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} className="px-6 flex-1">
           {announcements.map((announcement) => (
             <View key={announcement.id} className="mb-4 bg-white rounded-xl p-4 shadow-sm">
               <View className="flex-row justify-between items-start mb-3">
-                <View className="flex-1">
-                  <Text className="text-lg font-semibold text-slate-900 mb-1">
+                <View className="flex-1 mr-2">
+                  <Text className="text-base font-semibold text-slate-900 mb-1" numberOfLines={2}>
                     {announcement.title}
                   </Text>
                   <View className="flex-row items-center mb-2">
@@ -228,50 +226,39 @@ export default function AdminAnnouncements() {
                       • {formatDate(announcement.created_at)}
                     </Text>
                   </View>
-                  <Text className="text-sm text-slate-600 line-clamp-3">
+                  <Text className="text-sm text-slate-600" numberOfLines={3}>
                     {announcement.body}
                   </Text>
                 </View>
                 <View className="flex-row gap-2">
-                  <TouchableOpacity
-                    onPress={() => handleEdit(announcement)}
-                    className="p-2 rounded-lg bg-blue-500"
-                  >
+                  <TouchableOpacity onPress={() => handleEdit(announcement)} className="p-2 rounded-lg bg-blue-500">
                     <Ionicons name="create-outline" size={16} color="#fff" />
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleDelete(announcement)}
-                    className="p-2 rounded-lg bg-red-500"
-                  >
+                  <TouchableOpacity onPress={() => handleDelete(announcement)} className="p-2 rounded-lg bg-red-500">
                     <Ionicons name="trash-outline" size={16} color="#fff" />
                   </TouchableOpacity>
                 </View>
               </View>
             </View>
           ))}
+          <View className="h-24" />
         </ScrollView>
+      )}
 
-        {/* Floating Action Button */}
-        <TouchableOpacity
-          onPress={() => setModalVisible(true)}
-          className="absolute bottom-8 right-6 w-14 h-14 bg-primary rounded-full shadow-lg items-center justify-center"
-        >
-          <Ionicons name="add" size={24} color="#fff" />
-        </TouchableOpacity>
-      </View>
+      <TouchableOpacity
+        onPress={() => setModalVisible(true)}
+        className="absolute bottom-8 right-6 w-14 h-14 bg-[#0088CC] rounded-full shadow-lg items-center justify-center"
+      >
+        <Ionicons name="add" size={24} color="#fff" />
+      </TouchableOpacity>
 
-      {/* Add/Edit Modal */}
       <Modal
         visible={modalVisible}
         transparent
         animationType="slide"
-        onRequestClose={() => {
-          setModalVisible(false);
-          setEditingAnnouncement(null);
-          setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
-        }}
+        onRequestClose={resetForm}
       >
-        <KeyboardAvoidingView 
+        <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           className="flex-1"
         >
@@ -282,43 +269,45 @@ export default function AdminAnnouncements() {
               </Text>
 
               <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Title */}
                 <View className="mb-4">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Title</Text>
                   <TextInput
                     className="w-full rounded-lg border border-gray-300 p-3 text-slate-900"
                     value={formData.title}
-                    onChangeText={(text) => setFormData({ ...formData, title: text })}
+                    onChangeText={(text) => setFormData(prev => ({ ...prev, title: text.trimStart() }))}
                     placeholder="Enter announcement title"
+                    maxLength={120}
+                    editable={!saving}
                   />
                 </View>
 
-                {/* Body */}
                 <View className="mb-4">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Message</Text>
                   <TextInput
                     className="w-full h-32 rounded-lg border border-gray-300 p-3 text-slate-900"
                     value={formData.body}
-                    onChangeText={(text) => setFormData({ ...formData, body: text })}
+                    onChangeText={(text) => setFormData(prev => ({ ...prev, body: text.trimStart() }))}
                     placeholder="Enter announcement message"
                     multiline
                     textAlignVertical="top"
+                    maxLength={500}
+                    editable={!saving}
                   />
                 </View>
 
-                {/* Category */}
                 <View className="mb-4">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Category</Text>
                   <View className="flex-row flex-wrap gap-2">
                     {categories.map((cat) => (
                       <TouchableOpacity
                         key={cat.value}
-                        onPress={() => setFormData({ ...formData, category: cat.value })}
+                        onPress={() => setFormData(prev => ({ ...prev, category: cat.value }))}
                         className={`px-3 py-2 rounded-lg border ${
                           formData.category === cat.value
-                            ? 'bg-primary border-primary'
+                            ? 'bg-[#0088CC] border-[#0088CC]'
                             : 'bg-gray-100 border-gray-300'
                         }`}
+                        disabled={saving}
                       >
                         <Text className={`text-sm font-medium ${
                           formData.category === cat.value ? 'text-white' : 'text-slate-700'
@@ -330,19 +319,19 @@ export default function AdminAnnouncements() {
                   </View>
                 </View>
 
-                {/* Target Audience */}
                 <View className="mb-6">
                   <Text className="mb-2 text-sm font-medium text-slate-700">Target Audience</Text>
                   <View className="flex-row flex-wrap gap-2">
                     {audiences.map((aud) => (
                       <TouchableOpacity
                         key={aud.value}
-                        onPress={() => setFormData({ ...formData, target_audience: aud.value })}
+                        onPress={() => setFormData(prev => ({ ...prev, target_audience: aud.value }))}
                         className={`px-3 py-2 rounded-lg border ${
                           formData.target_audience === aud.value
-                            ? 'bg-primary border-primary'
+                            ? 'bg-[#0088CC] border-[#0088CC]'
                             : 'bg-gray-100 border-gray-300'
                         }`}
+                        disabled={saving}
                       >
                         <Text className={`text-sm font-medium ${
                           formData.target_audience === aud.value ? 'text-white' : 'text-slate-700'
@@ -354,25 +343,21 @@ export default function AdminAnnouncements() {
                   </View>
                 </View>
 
-                {/* Action Buttons */}
                 <View className="flex-row gap-3">
                   <TouchableOpacity
                     className="flex-1 rounded-lg bg-gray-200 p-3"
-                    onPress={() => {
-                      setModalVisible(false);
-                      setEditingAnnouncement(null);
-                      setFormData({ title: '', body: '', category: 'general', target_audience: 'all' });
-                    }}
+                    onPress={resetForm}
+                    disabled={saving}
                   >
                     <Text className="text-center font-medium text-slate-700">Cancel</Text>
                   </TouchableOpacity>
-                  
                   <TouchableOpacity
-                    className="flex-1 rounded-lg bg-primary p-3"
+                    className={`flex-1 rounded-lg bg-[#0088CC] p-3 ${saving ? 'opacity-60' : ''}`}
                     onPress={handleSave}
+                    disabled={saving}
                   >
                     <Text className="text-center font-medium text-white">
-                      {editingAnnouncement ? 'Update' : 'Create'}
+                      {saving ? 'Saving...' : editingAnnouncement ? 'Update' : 'Create'}
                     </Text>
                   </TouchableOpacity>
                 </View>
