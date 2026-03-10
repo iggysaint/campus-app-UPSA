@@ -27,17 +27,18 @@ interface Poll {
 
 const SEEN_KEY = 'last_seen_polls';
 
+// FIX: use start_date instead of created_at — polls don't have created_at
 const markPollsSeen = async () => {
   try {
     const q = query(
       collection(db, 'polls'),
       where('is_active', '==', true),
-      orderBy('created_at', 'desc'),
+      orderBy('start_date', 'desc'),
       limit(1)
     );
     const snap = await getDocs(q);
     if (!snap.empty) {
-      const latest = snap.docs[0].data().created_at;
+      const latest = snap.docs[0].data().start_date;
       const millis = latest?.toMillis?.();
       if (millis) {
         await AsyncStorage.setItem(SEEN_KEY, String(millis));
@@ -48,7 +49,6 @@ const markPollsSeen = async () => {
   }
 };
 
-// FIX: normalize vote_counts to match options length
 const normalizePoll = (pollData: Poll): Poll => {
   const optionCount = pollData.options?.length || 0;
   if (!pollData.vote_counts || pollData.vote_counts.length !== optionCount) {
@@ -66,7 +66,6 @@ export default function PollsScreen() {
 
   const fetchPolls = useCallback(async () => {
     try {
-      // FIX: orderBy instead of fetching all
       const q = query(collection(db, 'polls'), orderBy('start_date', 'desc'));
       const querySnapshot = await getDocs(q);
       const pollsData: Poll[] = [];
@@ -89,7 +88,6 @@ export default function PollsScreen() {
         where('user_id', '==', auth.currentUser.uid)
       );
       const querySnapshot = await getDocs(votesQuery);
-      // FIX: store option_index per poll so we can highlight what user voted
       const votedMap: Record<string, number> = {};
       querySnapshot.forEach((docSnap) => {
         const v = docSnap.data() as Vote;
@@ -115,28 +113,23 @@ export default function PollsScreen() {
 
     setVotingPollId(pollId);
     try {
-      // FIX: Firestore transaction to prevent race condition
       const pollRef = doc(db, 'polls', pollId);
       let newVoteCounts: number[] = [];
 
       await runTransaction(db, async (transaction) => {
         const pollDoc = await transaction.get(pollRef);
         if (!pollDoc.exists()) return;
-
         const data = pollDoc.data();
         const currentCounts = [...(data.vote_counts || [])];
         currentCounts[optionIndex] = (currentCounts[optionIndex] || 0) + 1;
         newVoteCounts = currentCounts;
-
         transaction.update(pollRef, { vote_counts: currentCounts });
       });
 
-      // Update local state after successful transaction
       setPolls(prev => prev.map(p =>
         p.id === pollId ? { ...p, vote_counts: newVoteCounts } : p
       ));
 
-      // Save vote record
       await addDoc(collection(db, 'votes'), {
         poll_id: pollId,
         user_id: auth.currentUser!.uid,
@@ -236,7 +229,6 @@ export default function PollsScreen() {
                         {status === 'active' ? 'Active' : 'Ended'}
                       </Text>
                     </View>
-                    {/* FIX: show closing time */}
                     {endingLabel ? (
                       <Text style={styles.endingLabel}>{endingLabel}</Text>
                     ) : null}
@@ -244,12 +236,10 @@ export default function PollsScreen() {
                 </View>
 
                 <View style={styles.optionsContainer}>
-                  {/* FIX: safe options map with ?? [] */}
                   {(poll.options ?? []).map((option, index) => {
                     const votes = voteCounts[index] || 0;
                     const percentage = getPercentage(votes, totalVotes);
                     const isWinner = winningOptions.includes(index);
-                    // FIX: highlight option user voted for
                     const isUserVote = userVoteIndex === index;
 
                     return (

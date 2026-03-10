@@ -6,9 +6,9 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { Tabs, useRouter } from 'expo-router';
-import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
-import { useCallback, useEffect, useState } from 'react';
-import { AppState } from 'react-native';
+import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { useEffect, useState } from 'react';
+import { View } from 'react-native';
 
 const SEEN_KEYS = {
   announcements: 'last_seen_announcements',
@@ -17,30 +17,19 @@ const SEEN_KEYS = {
   polls: 'last_seen_polls',
 };
 
-// FIX: safe number parser
 const toNumber = (value: string | null) => {
   const n = Number(value);
   return isNaN(n) ? 0 : n;
 };
 
-const getLatestTimestamp = async (
-  collectionName: string,
-  extraWhere?: { field: string; value: any }
-): Promise<number> => {
-  try {
-    const constraints: any[] = [orderBy('created_at', 'desc'), limit(1)];
-    if (extraWhere) {
-      constraints.unshift(where(extraWhere.field, '==', extraWhere.value));
-    }
-    const q = query(collection(db, collectionName), ...constraints);
-    const snap = await getDocs(q);
-    if (snap.empty) return 0;
-    const ts = snap.docs[0].data().created_at;
-    return ts?.toMillis?.() || 0;
-  } catch (e) {
-    console.log('getLatestTimestamp failed:', e);
-    return 0;
-  }
+const dotStyle = {
+  position: 'absolute' as const,
+  top: -3,
+  right: -6,
+  width: 10,
+  height: 10,
+  borderRadius: 5,
+  backgroundColor: '#EF4444',
 };
 
 export default function TabsLayout() {
@@ -62,10 +51,8 @@ export default function TabsLayout() {
   useEffect(() => {
     if (isAuthenticated) {
       registerForPushNotifications();
-
       const notificationListener = Notifications.addNotificationReceivedListener(() => {});
       const responseListener = Notifications.addNotificationResponseReceivedListener(() => {});
-
       return () => {
         notificationListener.remove();
         responseListener.remove();
@@ -73,61 +60,76 @@ export default function TabsLayout() {
     }
   }, [isAuthenticated]);
 
-  // FIX: extracted so it can be reused by AppState + useEffect
-  const checkNewContent = useCallback(async () => {
+  // Announcements — realtime listener
+  useEffect(() => {
     if (!isAuthenticated) return;
-    try {
-      const [
-        latestAnnouncement,
-        latestClub,
-        latestLibrary,
-        latestPoll,
-        seenAnnouncements,
-        seenClubs,
-        seenLibrary,
-        seenPolls,
-      ] = await Promise.all([
-        getLatestTimestamp('announcements', { field: 'is_active', value: true }),
-        getLatestTimestamp('clubs'),
-        getLatestTimestamp('library', { field: 'is_active', value: true }),
-        getLatestTimestamp('polls', { field: 'is_active', value: true }),
-        AsyncStorage.getItem(SEEN_KEYS.announcements),
-        AsyncStorage.getItem(SEEN_KEYS.clubs),
-        AsyncStorage.getItem(SEEN_KEYS.library),
-        AsyncStorage.getItem(SEEN_KEYS.polls),
-      ]);
-
-      // FIX: use toNumber() instead of parseInt
-      setHasNewAnnouncements(latestAnnouncement > toNumber(seenAnnouncements));
-      setHasNewClubs(latestClub > toNumber(seenClubs));
-      setHasNewLibrary(latestLibrary > toNumber(seenLibrary));
-      setHasNewPolls(latestPoll > toNumber(seenPolls));
-    } catch (e) {
-      console.log('Dot check failed:', e);
-    }
+    const q = query(
+      collection(db, 'announcements'),
+      where('is_active', '==', true),
+      orderBy('created_at', 'desc'),
+      limit(1)
+    );
+    const unsub = onSnapshot(q, async (snap) => {
+      if (snap.empty) return;
+      const latest = snap.docs[0].data().created_at?.toMillis?.() || 0;
+      const seen = await AsyncStorage.getItem(SEEN_KEYS.announcements);
+      setHasNewAnnouncements(latest > toNumber(seen));
+    }, (e) => console.log('announcements listener error:', e));
+    return () => unsub();
   }, [isAuthenticated]);
 
-  // Check on app start
+  // Clubs — realtime listener
   useEffect(() => {
-    checkNewContent();
-  }, [checkNewContent]);
+    if (!isAuthenticated) return;
+    const q = query(
+      collection(db, 'clubs'),
+      orderBy('created_at', 'desc'),
+      limit(1)
+    );
+    const unsub = onSnapshot(q, async (snap) => {
+      if (snap.empty) return;
+      const latest = snap.docs[0].data().created_at?.toMillis?.() || 0;
+      const seen = await AsyncStorage.getItem(SEEN_KEYS.clubs);
+      setHasNewClubs(latest > toNumber(seen));
+    }, (e) => console.log('clubs listener error:', e));
+    return () => unsub();
+  }, [isAuthenticated]);
 
-  // FIX: check when app resumes from background
+  // Library — realtime listener
   useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') {
-        checkNewContent();
-      }
-    });
-    return () => sub.remove();
-  }, [checkNewContent]);
+    if (!isAuthenticated) return;
+    const q = query(
+      collection(db, 'library'),
+      where('is_active', '==', true),
+      orderBy('created_at', 'desc'),
+      limit(1)
+    );
+    const unsub = onSnapshot(q, async (snap) => {
+      if (snap.empty) return;
+      const latest = snap.docs[0].data().created_at?.toMillis?.() || 0;
+      const seen = await AsyncStorage.getItem(SEEN_KEYS.library);
+      setHasNewLibrary(latest > toNumber(seen));
+    }, (e) => console.log('library listener error:', e));
+    return () => unsub();
+  }, [isAuthenticated]);
 
-  const badgeStyle = {
-    backgroundColor: '#EF4444',
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  };
+  // FIX: Polls — use start_date instead of created_at
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const q = query(
+      collection(db, 'polls'),
+      where('is_active', '==', true),
+      orderBy('start_date', 'desc'),
+      limit(1)
+    );
+    const unsub = onSnapshot(q, async (snap) => {
+      if (snap.empty) return;
+      const latest = snap.docs[0].data().start_date?.toMillis?.() || 0;
+      const seen = await AsyncStorage.getItem(SEEN_KEYS.polls);
+      setHasNewPolls(latest > toNumber(seen));
+    }, (e) => console.log('polls listener error:', e));
+    return () => unsub();
+  }, [isAuthenticated]);
 
   return (
     <Tabs
@@ -147,10 +149,11 @@ export default function TabsLayout() {
           title: 'Home',
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" size={size} color={color} />
+            <View style={{ width: size, height: size }}>
+              <Ionicons name="home" size={size} color={color} />
+              {hasNewAnnouncements && <View style={dotStyle} />}
+            </View>
           ),
-          tabBarBadge: hasNewAnnouncements ? '' : undefined,
-          tabBarBadgeStyle: badgeStyle,
         }}
       />
 
@@ -171,10 +174,11 @@ export default function TabsLayout() {
           title: 'Clubs',
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="people" size={size} color={color} />
+            <View style={{ width: size, height: size }}>
+              <Ionicons name="people" size={size} color={color} />
+              {hasNewClubs && <View style={dotStyle} />}
+            </View>
           ),
-          tabBarBadge: hasNewClubs ? '' : undefined,
-          tabBarBadgeStyle: badgeStyle,
         }}
       />
 
@@ -184,10 +188,11 @@ export default function TabsLayout() {
           title: 'Library',
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="library" size={size} color={color} />
+            <View style={{ width: size, height: size }}>
+              <Ionicons name="library" size={size} color={color} />
+              {hasNewLibrary && <View style={dotStyle} />}
+            </View>
           ),
-          tabBarBadge: hasNewLibrary ? '' : undefined,
-          tabBarBadgeStyle: badgeStyle,
         }}
       />
 
@@ -197,10 +202,11 @@ export default function TabsLayout() {
           title: 'Profile',
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person" size={size} color={color} />
+            <View style={{ width: size, height: size }}>
+              <Ionicons name="person" size={size} color={color} />
+              {hasNewPolls && <View style={dotStyle} />}
+            </View>
           ),
-          tabBarBadge: hasNewPolls ? '' : undefined,
-          tabBarBadgeStyle: badgeStyle,
         }}
       />
 
