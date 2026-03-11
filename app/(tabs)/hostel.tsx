@@ -4,13 +4,16 @@ import { useRouter } from 'expo-router';
 import {
   addDoc,
   collection,
+  doc,
+  getDoc,
   getDocs,
   onSnapshot,
   query,
+  serverTimestamp,
   where
 } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
 type Hostel = {
   id: string;
@@ -46,11 +49,41 @@ type UserBooking = {
   price: number | null;
   gender: string | null;
   status: string | null;
+  reference: string | null;
   created_at: any;
 };
 
+type HostelPricing = {
+  two_in_room: number;
+  four_in_room: number;
+};
+
+// Generate a unique reference number
+const generateReference = () => {
+  const year = new Date().getFullYear();
+  const random = Math.floor(10000 + Math.random() * 90000);
+  return `UPSA-${year}-${random}`;
+};
+
+// Placeholder payment link — replace with real Zeepay link later
+const PAYMENT_BASE_URL = 'https://pay.upsa-campus.app/hostel';
+
 function BookingStatusScreen({ booking }: { booking: UserBooking }) {
   const router = useRouter();
+
+  const handlePayNow = async () => {
+    const paymentUrl = `${PAYMENT_BASE_URL}?ref=${booking.reference}`;
+    try {
+      const supported = await Linking.canOpenURL(paymentUrl);
+      if (supported) {
+        await Linking.openURL(paymentUrl);
+      } else {
+        Alert.alert('Error', 'Could not open payment link.');
+      }
+    } catch (e) {
+      Alert.alert('Error', 'Could not open payment link.');
+    }
+  };
 
   return (
     <View className="flex-1 bg-[#F2F4F6]">
@@ -69,64 +102,77 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         <View className="px-5 py-6">
           <View className="rounded-xl bg-white p-6 shadow-sm">
+
+            {/* Status Header */}
             <View className="mb-6 items-center">
-              <View className="mb-3 h-16 w-16 items-center justify-center rounded-full bg-primary">
-                <Ionicons name="business" size={32} color="white" />
+              <View className={`mb-3 h-16 w-16 items-center justify-center rounded-full ${
+                booking.status === 'confirmed' ? 'bg-green-500' : 'bg-orange-400'
+              }`}>
+                <Ionicons
+                  name={booking.status === 'confirmed' ? 'checkmark-circle' : 'time'}
+                  size={32}
+                  color="white"
+                />
               </View>
               <Text className="mb-1 text-lg font-semibold text-slate-900">
                 {booking.hostel_name || 'Hostel'}
               </Text>
               <View className={`rounded-full px-3 py-1 ${
-                booking.status === 'confirmed' 
-                  ? 'bg-green-100' 
-                  : 'bg-orange-100'
+                booking.status === 'confirmed' ? 'bg-green-100' : 'bg-orange-100'
               }`}>
                 <Text className={`text-sm font-medium capitalize ${
-                  booking.status === 'confirmed' 
-                    ? 'text-green-700' 
-                    : 'text-orange-700'
+                  booking.status === 'confirmed' ? 'text-green-700' : 'text-orange-700'
                 }`}>
-                  {booking.status || 'Pending'}
+                  {booking.status === 'confirmed' ? 'Confirmed' : 'Pending Payment'}
                 </Text>
               </View>
             </View>
 
+            {/* Reference Number */}
+            {booking.reference && (
+              <View className="mb-4 rounded-xl bg-slate-50 border border-slate-200 p-4">
+                <Text className="text-xs text-slate-500 mb-1 text-center">Booking Reference</Text>
+                <Text className="text-xl font-bold text-center text-slate-900 tracking-widest">
+                  {booking.reference}
+                </Text>
+                <Text className="text-xs text-slate-400 mt-1 text-center">
+                  Keep this reference safe
+                </Text>
+              </View>
+            )}
+
+            {/* Booking Details */}
             <View className="space-y-4">
               <View className="flex-row justify-between">
                 <Text className="text-sm text-slate-600">Floor:</Text>
                 <Text className="text-sm font-medium text-slate-900">
-                  Floor {booking.floor_number || 'N/A'}
+                  Floor {booking.floor_number ?? 'N/A'}
                 </Text>
               </View>
-              
               <View className="flex-row justify-between">
                 <Text className="text-sm text-slate-600">Room:</Text>
                 <Text className="text-sm font-medium text-slate-900">
                   {booking.room_number || 'N/A'}
                 </Text>
               </View>
-              
               <View className="flex-row justify-between">
                 <Text className="text-sm text-slate-600">Bed:</Text>
                 <Text className="text-sm font-medium text-slate-900">
-                  Bed {booking.bed_number || 'N/A'}
+                  Bed {booking.bed_number ?? 'N/A'}
                 </Text>
               </View>
-              
               <View className="flex-row justify-between">
                 <Text className="text-sm text-slate-600">Room Type:</Text>
                 <Text className="text-sm font-medium text-slate-900">
                   {booking.room_type || 'N/A'}
                 </Text>
               </View>
-              
               <View className="flex-row justify-between">
                 <Text className="text-sm text-slate-600">Gender:</Text>
                 <Text className="text-sm font-medium capitalize text-slate-900">
                   {booking.gender || 'N/A'}
                 </Text>
               </View>
-              
               <View className="border-t border-gray-200 pt-4">
                 <View className="flex-row justify-between">
                   <Text className="text-base font-semibold text-slate-900">Price:</Text>
@@ -135,7 +181,6 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
                   </Text>
                 </View>
               </View>
-              
               <View className="border-t border-gray-200 pt-4">
                 <Text className="text-xs text-slate-500">
                   Booked on: {booking.created_at?.toDate?.()?.toLocaleDateString() || 'Unknown date'}
@@ -143,27 +188,43 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
               </View>
             </View>
 
+            {/* Pending — show pay now button */}
             {booking.status === 'pending' && (
-              <View className="mt-6 rounded-lg bg-amber-50 p-4">
+              <View className="mt-6">
+                <View className="mb-4 rounded-lg bg-amber-50 p-4">
+                  <View className="flex-row items-start">
+                    <Ionicons name="time-outline" size={20} color="#F59E0B" />
+                    <Text className="ml-2 text-sm text-amber-800 flex-1">
+                      Your booking is pending. Please complete your payment using the reference number above to confirm your room.
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={handlePayNow}
+                  className="rounded-xl bg-primary px-4 py-4 active:opacity-90"
+                >
+                  <View className="flex-row items-center justify-center">
+                    <Ionicons name="card-outline" size={20} color="white" />
+                    <Text className="ml-2 text-base font-bold text-white">
+                      Pay Now — GHS {booking.price || 0}
+                    </Text>
+                  </View>
+                </Pressable>
+              </View>
+            )}
+
+            {/* Confirmed */}
+            {booking.status === 'confirmed' && (
+              <View className="mt-6 rounded-lg bg-green-50 p-4">
                 <View className="flex-row items-center">
-                  <Ionicons name="time-outline" size={20} color="#F59E0B" className="mr-2" />
-                  <Text className="text-sm text-amber-800">
-                    Your booking is pending confirmation. Please wait for admin approval.
+                  <Ionicons name="checkmark-circle-outline" size={20} color="#10B981" />
+                  <Text className="ml-2 text-sm text-green-800 flex-1">
+                    Payment confirmed! You can now check in at the hostel. Show your reference number at reception.
                   </Text>
                 </View>
               </View>
             )}
 
-            {booking.status === 'confirmed' && (
-              <View className="mt-6 rounded-lg bg-green-50 p-4">
-                <View className="flex-row items-center">
-                  <Ionicons name="checkmark-circle-outline" size={20} color="#10B981" className="mr-2" />
-                  <Text className="text-sm text-green-800">
-                    Your booking has been confirmed! You can now check in at the hostel.
-                  </Text>
-                </View>
-              </View>
-            )}
           </View>
         </View>
       </ScrollView>
@@ -178,26 +239,18 @@ function StepIndicator({ currentStep }: { currentStep: number }) {
     <View className="mb-6 flex-row items-center justify-between px-4">
       {STEPS.map((step, index) => (
         <View key={step} className="flex-1 flex-row items-center">
-          <View
-            className={`h-8 w-8 items-center justify-center rounded-full ${
-              index < currentStep
-                ? 'bg-green-500'
-                : index === currentStep
-                ? 'bg-primary'
-                : 'bg-gray-300'
-            }`}
-          >
+          <View className={`h-8 w-8 items-center justify-center rounded-full ${
+            index < currentStep ? 'bg-green-500' : index === currentStep ? 'bg-primary' : 'bg-gray-300'
+          }`}>
             {index < currentStep ? (
               <Ionicons name="checkmark" size={16} color="white" />
             ) : (
               <Text className="text-xs font-medium text-white">{index + 1}</Text>
             )}
           </View>
-          <Text
-            className={`ml-2 text-xs font-medium ${
-              index <= currentStep ? 'text-slate-900' : 'text-gray-500'
-            }`}
-          >
+          <Text className={`ml-2 text-xs font-medium ${
+            index <= currentStep ? 'text-slate-900' : 'text-gray-500'
+          }`}>
             {step}
           </Text>
           {index < STEPS.length - 1 && (
@@ -211,9 +264,9 @@ function StepIndicator({ currentStep }: { currentStep: number }) {
   );
 }
 
-function GenderCard({ gender, selected, onPress }: { 
-  gender: 'male' | 'female'; 
-  selected: boolean; 
+function GenderCard({ gender, selected, onPress }: {
+  gender: 'male' | 'female';
+  selected: boolean;
   onPress: () => void;
 }) {
   return (
@@ -227,10 +280,10 @@ function GenderCard({ gender, selected, onPress }: {
         <View className={`mb-3 h-16 w-16 items-center justify-center rounded-full ${
           gender === 'male' ? 'bg-blue-100' : 'bg-pink-100'
         }`}>
-          <Ionicons 
-            name={gender === 'male' ? 'man' : 'woman'} 
-            size={32} 
-            color={gender === 'male' ? '#0088CC' : '#EC4899'} 
+          <Ionicons
+            name={gender === 'male' ? 'man' : 'woman'}
+            size={32}
+            color={gender === 'male' ? '#0088CC' : '#EC4899'}
           />
         </View>
         <Text className="text-lg font-semibold capitalize text-slate-900">{gender}</Text>
@@ -239,9 +292,9 @@ function GenderCard({ gender, selected, onPress }: {
   );
 }
 
-function HostelCard({ hostel, selected, onPress }: { 
-  hostel: Hostel; 
-  selected: boolean; 
+function HostelCard({ hostel, selected, onPress }: {
+  hostel: Hostel;
+  selected: boolean;
   onPress: () => void;
 }) {
   return (
@@ -271,13 +324,12 @@ function HostelCard({ hostel, selected, onPress }: {
   );
 }
 
-function FloorCard({ floor, selected, onPress }: { 
-  floor: number; 
-  selected: boolean; 
+function FloorCard({ floor, selected, onPress }: {
+  floor: number;
+  selected: boolean;
   onPress: () => void;
 }) {
   const roomRange = floor === 0 ? '001-050' : `${floor}01-${floor}50`;
-  
   return (
     <Pressable
       onPress={onPress}
@@ -290,9 +342,7 @@ function FloorCard({ floor, selected, onPress }: {
           <Ionicons name="layers" size={20} color="#9333EA" />
         </View>
         <View className="flex-1">
-          <Text className="mb-1 text-base font-semibold text-slate-900">
-            Floor {floor}
-          </Text>
+          <Text className="mb-1 text-base font-semibold text-slate-900">Floor {floor}</Text>
           <Text className="text-sm text-slate-500">Rooms {roomRange}</Text>
         </View>
       </View>
@@ -300,65 +350,66 @@ function FloorCard({ floor, selected, onPress }: {
   );
 }
 
-function RoomCard({ room, roomType, available, selected, onPress }: { 
-  room: string; 
-  roomType: string; 
-  available: boolean; 
+function RoomCard({ room, roomType, available, selected, onPress, pricing }: {
+  room: string;
+  roomType: string;
+  available: boolean;
   selected: boolean;
   onPress: () => void;
+  pricing: HostelPricing | null;
 }) {
+  const price = roomType === '2-in-room'
+    ? pricing?.two_in_room ?? '...'
+    : pricing?.four_in_room ?? '...';
+
   return (
     <Pressable
       onPress={available ? onPress : undefined}
       className={`mb-2 rounded-xl border-2 p-3 active:opacity-80 ${
-        selected 
-          ? 'border-primary bg-primary/10' 
-          : available 
-            ? 'border-gray-200 bg-white shadow-sm' 
+        selected
+          ? 'border-primary bg-primary/10'
+          : available
+            ? 'border-gray-200 bg-white shadow-sm'
             : 'border-gray-100 bg-gray-50 opacity-50'
       }`}
     >
       <View className="flex-row items-center justify-between">
-        <Text className={`text-base font-semibold ${
-          selected ? 'text-primary' : 'text-slate-900'
-        }`}>{room}</Text>
-        <View className={`rounded-full px-2 py-1 ${
-          roomType === '2-in-room' ? 'bg-blue-100' : 'bg-green-100'
-        }`}>
-          <Text className={`text-xs font-medium ${
-            roomType === '2-in-room' ? 'text-blue-700' : 'text-green-700'
+        <Text className={`text-base font-semibold ${selected ? 'text-primary' : 'text-slate-900'}`}>
+          {room}
+        </Text>
+        <View className="flex-row items-center gap-2">
+          <Text className="text-xs text-slate-500">GHS {price}</Text>
+          <View className={`rounded-full px-2 py-1 ${
+            roomType === '2-in-room' ? 'bg-blue-100' : 'bg-green-100'
           }`}>
-            {roomType}
-          </Text>
+            <Text className={`text-xs font-medium ${
+              roomType === '2-in-room' ? 'text-blue-700' : 'text-green-700'
+            }`}>
+              {roomType}
+            </Text>
+          </View>
         </View>
       </View>
     </Pressable>
   );
 }
 
-function BedSelectionModal({ 
-  visible, 
-  room, 
-  roomType, 
-  onClose, 
-  onConfirm 
-}: { 
-  visible: boolean; 
-  room: string; 
-  roomType: string; 
-  onClose: () => void; 
+function BedSelectionModal({
+  visible, room, roomType, onClose, onConfirm
+}: {
+  visible: boolean;
+  room: string;
+  roomType: string;
+  onClose: () => void;
   onConfirm: (bedNumber: number) => void;
 }) {
   const [bedBookings, setBedBookings] = useState<BedBooking[]>([]);
   const [selectedBed, setSelectedBed] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-
   const totalBeds = roomType === '2-in-room' ? 2 : 4;
 
   useEffect(() => {
-    if (visible && room) {
-      fetchBedBookings();
-    }
+    if (visible && room) fetchBedBookings();
   }, [visible, room]);
 
   const fetchBedBookings = async () => {
@@ -366,7 +417,6 @@ function BedSelectionModal({
       setLoading(true);
       const q = query(collection(db, 'bookings'), where('room_number', '==', room));
       const querySnapshot = await getDocs(q);
-      
       const bookings: BedBooking[] = [];
       querySnapshot.forEach((doc) => {
         const data = doc.data();
@@ -378,23 +428,16 @@ function BedSelectionModal({
           status: data.status || '',
         });
       });
-      
       setBedBookings(bookings);
-    } catch (error) {
-      console.error('Failed to fetch bed bookings:', error);
+    } catch (e) {
+      console.log('fetchBedBookings error:', e);
     } finally {
       setLoading(false);
     }
   };
 
-  const getBedStatus = (bedNumber: number) => {
-    const booking = bedBookings.find(b => b.bed_number === bedNumber);
-    return booking ? booking.status : 'available';
-  };
-
   const isBedOccupied = (bedNumber: number) => {
-    const status = getBedStatus(bedNumber);
-    return status !== 'available';
+    return bedBookings.some(b => b.bed_number === bedNumber);
   };
 
   const handleConfirm = () => {
@@ -407,12 +450,7 @@ function BedSelectionModal({
   };
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View className="flex-1 bg-[#F2F4F6]">
         <View className="bg-white px-5 pt-14 pb-4 shadow-sm">
           <View className="flex-row items-center justify-between mb-6">
@@ -421,14 +459,14 @@ function BedSelectionModal({
               <Ionicons name="close" size={24} color="#6B7280" />
             </Pressable>
           </View>
-          
+
           <View className={`mb-4 rounded-lg p-3 ${
             roomType === '2-in-room' ? 'bg-blue-100' : 'bg-green-100'
           }`}>
             <Text className={`text-sm font-medium ${
               roomType === '2-in-room' ? 'text-blue-700' : 'text-green-700'
             }`}>
-              {roomType} - {totalBeds} Beds
+              {roomType} — {totalBeds} Beds
             </Text>
           </View>
 
@@ -440,7 +478,6 @@ function BedSelectionModal({
                 const bedNumber = i + 1;
                 const occupied = isBedOccupied(bedNumber);
                 const selected = selectedBed === bedNumber;
-                
                 return (
                   <Pressable
                     key={bedNumber}
@@ -499,18 +536,23 @@ function BedSelectionModal({
   );
 }
 
-function ConfirmCard({ bookingData, onConfirm }: { 
-  bookingData: BookingData; 
+function ConfirmCard({ bookingData, pricing, onConfirm }: {
+  bookingData: BookingData;
+  pricing: HostelPricing | null;
   onConfirm: () => void;
 }) {
-  const roomType = bookingData.selectedRoom?.endsWith('15') || 
-                   bookingData.selectedRoom?.endsWith('44') ? '2-in-room' : '4-in-room';
-  const price = roomType === '2-in-room' ? 1500 : 800;
+  const roomType = bookingData.selectedRoom
+    ? (bookingData.selectedRoom.endsWith('15') || bookingData.selectedRoom.endsWith('44')
+      ? '2-in-room' : '4-in-room')
+    : '4-in-room';
+
+  const price = roomType === '2-in-room'
+    ? pricing?.two_in_room ?? 0
+    : pricing?.four_in_room ?? 0;
 
   return (
     <View className="rounded-xl bg-white p-6 shadow-sm">
       <Text className="mb-4 text-lg font-semibold text-slate-900">Booking Summary</Text>
-      
       <View className="space-y-3">
         <View className="flex-row justify-between">
           <Text className="text-sm text-slate-600">Hostel:</Text>
@@ -518,33 +560,34 @@ function ConfirmCard({ bookingData, onConfirm }: {
             {bookingData.selectedHostel?.name || 'N/A'}
           </Text>
         </View>
-        
         <View className="flex-row justify-between">
           <Text className="text-sm text-slate-600">Floor:</Text>
           <Text className="text-sm font-medium text-slate-900">
-            Floor {bookingData.selectedFloor || 'N/A'}
+            Floor {bookingData.selectedFloor ?? 'N/A'}
           </Text>
         </View>
-        
         <View className="flex-row justify-between">
           <Text className="text-sm text-slate-600">Room:</Text>
           <Text className="text-sm font-medium text-slate-900">
             {bookingData.selectedRoom || 'N/A'}
           </Text>
         </View>
-        
+        <View className="flex-row justify-between">
+          <Text className="text-sm text-slate-600">Bed:</Text>
+          <Text className="text-sm font-medium text-slate-900">
+            Bed {bookingData.selectedBed ?? 'N/A'}
+          </Text>
+        </View>
         <View className="flex-row justify-between">
           <Text className="text-sm text-slate-600">Room Type:</Text>
           <Text className="text-sm font-medium text-slate-900">{roomType}</Text>
         </View>
-        
         <View className="flex-row justify-between">
           <Text className="text-sm text-slate-600">Gender:</Text>
           <Text className="text-sm font-medium capitalize text-slate-900">
             {bookingData.gender || 'N/A'}
           </Text>
         </View>
-        
         <View className="border-t border-gray-200 pt-3">
           <View className="flex-row justify-between">
             <Text className="text-base font-semibold text-slate-900">Price:</Text>
@@ -552,7 +595,16 @@ function ConfirmCard({ bookingData, onConfirm }: {
           </View>
         </View>
       </View>
-      
+
+      <View className="mt-4 rounded-lg bg-blue-50 p-3">
+        <View className="flex-row items-start">
+          <Ionicons name="information-circle-outline" size={18} color="#0088CC" />
+          <Text className="ml-2 text-xs text-blue-700 flex-1">
+            After booking you will receive a reference number and a payment link to complete your reservation.
+          </Text>
+        </View>
+      </View>
+
       <Pressable
         onPress={onConfirm}
         className="mt-6 rounded-xl bg-primary px-4 py-3 active:opacity-90"
@@ -570,7 +622,8 @@ export default function HostelBookingScreen() {
   const [loading, setLoading] = useState(false);
   const [showBedModal, setShowBedModal] = useState(false);
   const [existingBooking, setExistingBooking] = useState<UserBooking | null>(null);
-  
+  const [pricing, setPricing] = useState<HostelPricing | null>(null);
+
   const [bookingData, setBookingData] = useState<BookingData>({
     gender: null,
     selectedHostel: null,
@@ -586,37 +639,48 @@ export default function HostelBookingScreen() {
       return;
     }
 
-    // Check for existing booking and set up real-time listener
+    // Fetch pricing from Firestore settings
+    const fetchPricing = async () => {
+      try {
+        const pricingDoc = await getDoc(doc(db, 'settings', 'hostel_pricing'));
+        if (pricingDoc.exists()) {
+          const data = pricingDoc.data();
+          setPricing({
+            two_in_room: data.two_in_room || 0,
+            four_in_room: data.four_in_room || 0,
+          });
+        }
+      } catch (e) {
+        console.log('fetchPricing error:', e);
+      }
+    };
+
+    // Real-time listener for existing booking
     const q = query(collection(db, 'bookings'), where('user_id', '==', user.uid));
-    
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const bookings: UserBooking[] = [];
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
         bookings.push({
-          id: doc.id,
+          id: docSnap.id,
           hostel_name: data.hostel_name || null,
-          floor_number: data.floor_number || null,
+          floor_number: data.floor_number ?? null,
           room_number: data.room_number || null,
-          bed_number: data.bed_number || null,
+          bed_number: data.bed_number ?? null,
           room_type: data.room_type || null,
           price: data.price || null,
           gender: data.gender || null,
           status: data.status || null,
+          reference: data.reference || null,
           created_at: data.created_at || null,
         });
       });
-
       if (bookings.length > 0) {
-        // User has an existing booking, show status screen
         setExistingBooking(bookings[0]);
       } else {
-        // No existing booking, allow booking flow
         setExistingBooking(null);
       }
-    }, (error) => {
-      console.error('Error listening for booking updates:', error);
-    });
+    }, (e) => console.log('booking listener error:', e));
 
     // Fetch hostels
     const fetchHostels = async () => {
@@ -624,34 +688,30 @@ export default function HostelBookingScreen() {
         setLoading(true);
         const hostelQuery = query(collection(db, 'hostels'), where('is_active', '==', true));
         const querySnapshot = await getDocs(hostelQuery);
-        
         const data: Hostel[] = [];
-        querySnapshot.forEach((doc) => {
-          const docData = doc.data();
+        querySnapshot.forEach((docSnap) => {
+          const d = docSnap.data();
           data.push({
-            id: doc.id,
-            name: docData.name || null,
-            total_floors: docData.total_floors || 0,
-            description: docData.description || null,
-            is_active: docData.is_active || false,
+            id: docSnap.id,
+            name: d.name || null,
+            total_floors: d.total_floors || 0,
+            description: d.description || null,
+            is_active: d.is_active || false,
           });
         });
-        
         setHostels(data);
-      } catch (error) {
-        console.error('Failed to fetch hostels:', error);
+      } catch (e) {
+        console.log('fetchHostels error:', e);
       } finally {
         setLoading(false);
       }
     };
 
+    fetchPricing();
     fetchHostels();
-
-    // Cleanup listener on unmount
     return () => unsubscribe();
   }, [router]);
 
-  // If user has existing booking, show status screen
   if (existingBooking) {
     return <BookingStatusScreen booking={existingBooking} />;
   }
@@ -663,7 +723,7 @@ export default function HostelBookingScreen() {
   const generateRooms = (floor: number) => {
     const rooms = [];
     for (let i = 1; i <= 50; i++) {
-      const roomNumber = floor === 0 
+      const roomNumber = floor === 0
         ? `00${i}`.slice(-3)
         : `${floor}${i.toString().padStart(2, '0')}`;
       rooms.push(roomNumber);
@@ -674,11 +734,8 @@ export default function HostelBookingScreen() {
   const getAvailableFloors = (totalFloors: number, gender: 'male' | 'female') => {
     const floors = [];
     for (let i = 0; i < totalFloors; i++) {
-      if (gender === 'male' && i % 2 === 0) {
-        floors.push(i); // Even floors for male
-      } else if (gender === 'female' && i % 2 === 1) {
-        floors.push(i); // Odd floors for female
-      }
+      if (gender === 'male' && i % 2 === 0) floors.push(i);
+      else if (gender === 'female' && i % 2 === 1) floors.push(i);
     }
     return floors;
   };
@@ -692,7 +749,12 @@ export default function HostelBookingScreen() {
 
     try {
       const roomType = getRoomType(bookingData.selectedRoom);
-      const price = roomType === '2-in-room' ? 1500 : 800;
+      const price = roomType === '2-in-room'
+        ? pricing?.two_in_room ?? 0
+        : pricing?.four_in_room ?? 0;
+
+      // FIX: generate reference number
+      const reference = generateReference();
 
       await addDoc(collection(db, 'bookings'), {
         user_id: user.uid,
@@ -704,16 +766,14 @@ export default function HostelBookingScreen() {
         price: price,
         gender: bookingData.gender,
         status: 'pending',
-        created_at: new Date(),
+        reference: reference,
+        // FIX: serverTimestamp instead of new Date()
+        created_at: serverTimestamp(),
       });
 
-      Alert.alert(
-        'Success',
-        'Your hostel booking has been submitted successfully!',
-        [{ text: 'OK', onPress: () => router.back() }]
-      );
-    } catch (error) {
-      console.error('Failed to create booking:', error);
+      // onSnapshot will automatically show BookingStatusScreen
+    } catch (e) {
+      console.log('handleConfirmBooking error:', e);
       Alert.alert('Error', 'Failed to submit booking. Please try again.');
     }
   };
@@ -731,23 +791,15 @@ export default function HostelBookingScreen() {
 
   const renderStep = () => {
     switch (currentStep) {
-      case 0: // Gender Selection
+      case 0:
         return (
           <View>
-            <GenderCard
-              gender="male"
-              selected={bookingData.gender === 'male'}
-              onPress={() => setBookingData({ ...bookingData, gender: 'male' })}
-            />
-            <GenderCard
-              gender="female"
-              selected={bookingData.gender === 'female'}
-              onPress={() => setBookingData({ ...bookingData, gender: 'female' })}
-            />
+            <GenderCard gender="male" selected={bookingData.gender === 'male'} onPress={() => setBookingData({ ...bookingData, gender: 'male' })} />
+            <GenderCard gender="female" selected={bookingData.gender === 'female'} onPress={() => setBookingData({ ...bookingData, gender: 'female' })} />
           </View>
         );
 
-      case 1: // Hostel Selection
+      case 1:
         return (
           <View>
             {loading ? (
@@ -767,14 +819,9 @@ export default function HostelBookingScreen() {
           </View>
         );
 
-      case 2: // Floor Selection
+      case 2:
         if (!bookingData.selectedHostel || !bookingData.gender) return null;
-        
-        const availableFloors = getAvailableFloors(
-          bookingData.selectedHostel.total_floors,
-          bookingData.gender
-        );
-        
+        const availableFloors = getAvailableFloors(bookingData.selectedHostel.total_floors, bookingData.gender);
         return (
           <View>
             {availableFloors.map((floor) => (
@@ -788,11 +835,9 @@ export default function HostelBookingScreen() {
           </View>
         );
 
-      case 3: // Room Selection
+      case 3:
         if (bookingData.selectedFloor === null) return null;
-        
         const rooms = generateRooms(bookingData.selectedFloor);
-        
         return (
           <View>
             {rooms.map((room) => (
@@ -802,6 +847,7 @@ export default function HostelBookingScreen() {
                 roomType={getRoomType(room)}
                 available={true}
                 selected={bookingData.selectedRoom === room}
+                pricing={pricing}
                 onPress={() => {
                   setBookingData({ ...bookingData, selectedRoom: room });
                   setShowBedModal(true);
@@ -811,10 +857,11 @@ export default function HostelBookingScreen() {
           </View>
         );
 
-      case 4: // Confirmation
+      case 4:
         return (
           <ConfirmCard
             bookingData={bookingData}
+            pricing={pricing}
             onConfirm={handleConfirmBooking}
           />
         );
@@ -841,11 +888,10 @@ export default function HostelBookingScreen() {
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         <View className="px-5 py-6">
           <StepIndicator currentStep={currentStep} />
-          
           <View className="min-h-[400px]">
             {renderStep()}
           </View>
-          
+
           {currentStep < 4 && (
             <View className="mt-6 flex-row gap-3">
               {currentStep > 0 && (
@@ -856,14 +902,11 @@ export default function HostelBookingScreen() {
                   <Text className="text-center text-base font-semibold text-gray-600">Back</Text>
                 </Pressable>
               )}
-              
               <Pressable
                 onPress={() => setCurrentStep(currentStep + 1)}
                 disabled={!canContinue()}
                 className={`flex-1 rounded-xl px-4 py-3 active:opacity-90 ${
-                  canContinue()
-                    ? 'bg-primary'
-                    : 'bg-gray-300'
+                  canContinue() ? 'bg-primary' : 'bg-gray-300'
                 }`}
               >
                 <Text className={`text-center text-base font-semibold ${
