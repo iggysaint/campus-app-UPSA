@@ -1,5 +1,6 @@
 import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
 import {
   collection,
@@ -12,8 +13,8 @@ import {
   setDoc,
   where
 } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
-import { Alert, Clipboard, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
 type Hostel = {
   id: string;
@@ -49,9 +50,7 @@ type UserBooking = {
   room_type: string | null;
   amount: number | null;
   gender: string | null;
-  // Booking status: pending | confirmed | cancelled | expired
   status: string | null;
-  // Payment status: unpaid | paid | failed | refunded
   payment_status: string | null;
   payment_reference: string | null;
   payment_method: string | null;
@@ -68,7 +67,6 @@ type HostelPricing = {
 // Generate reference: UPSA-HSTL-FY5Y8HH (7 alphanumeric chars)
 const generateReference = (docId: string): string => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  // Use docId as seed for first part, random for rest
   const base = docId.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
   let result = base.slice(0, 4);
   while (result.length < 7) {
@@ -79,15 +77,15 @@ const generateReference = (docId: string): string => {
 
 const PAYMENT_BASE_URL = 'https://pay.upsa-campus.app/hostel';
 
-// ─── Booking Status Screen ───────────────────────────────────────────────────
+// ─── Booking Status Screen ────────────────────────────────────────────────────
 
 function BookingStatusScreen({ booking }: { booking: UserBooking }) {
   const router = useRouter();
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
     if (booking.reference) {
-      Clipboard.setString(booking.reference);
+      await Clipboard.setStringAsync(booking.reference);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
@@ -205,8 +203,10 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
                   booking.payment_status === 'paid' ? 'text-green-700' :
                   booking.payment_status === 'failed' ? 'text-red-700' : 'text-gray-600'
                 }`}>
-                  Payment: {booking.payment_status === 'paid' ? 'Paid' :
-                            booking.payment_status === 'failed' ? 'Failed' : 'Unpaid'}
+                  Payment: {
+                    booking.payment_status === 'paid' ? 'Paid' :
+                    booking.payment_status === 'failed' ? 'Failed' : 'Unpaid'
+                  }
                 </Text>
               </View>
             </View>
@@ -284,7 +284,6 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
                 <Text className="text-xs text-slate-500">
                   Booked on: {booking.created_at?.toDate?.()?.toLocaleDateString() || 'Unknown date'}
                 </Text>
-                {/* Expiry warning */}
                 {isPending && booking.expires_at && (
                   <Text className="text-xs text-orange-500 mt-1">
                     ⚠ Expires: {booking.expires_at?.toDate?.()?.toLocaleString() || 'N/A'}
@@ -325,7 +324,7 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
                   <View className="flex-row items-start">
                     <Ionicons name="close-circle-outline" size={20} color="#EF4444" />
                     <Text className="ml-2 text-sm text-red-800 flex-1">
-                      Your last payment failed. Please try again using the Pay Now button.
+                      Your last payment failed. Please try again.
                     </Text>
                   </View>
                 </View>
@@ -803,6 +802,22 @@ export default function HostelBookingScreen() {
     selectedBed: null,
   });
 
+  // FIX: defined OUTSIDE useEffect so it can be called from HostelCard onPress
+  const fetchPricingForHostel = useCallback(async (hostelId: string) => {
+    try {
+      const hostelDoc = await getDoc(doc(db, 'hostels', hostelId));
+      if (hostelDoc.exists()) {
+        const data = hostelDoc.data();
+        setPricing({
+          two_in_room: data.two_in_room || 0,
+          four_in_room: data.four_in_room || 0,
+        });
+      }
+    } catch (e) {
+      console.log('fetchPricingForHostel error:', e);
+    }
+  }, []);
+
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) {
@@ -810,23 +825,7 @@ export default function HostelBookingScreen() {
       return;
     }
 
-    // Fetch pricing from Firestore
-    const fetchPricing = async () => {
-      try {
-        const pricingDoc = await getDoc(doc(db, 'settings', 'hostel_pricing'));
-        if (pricingDoc.exists()) {
-          const data = pricingDoc.data();
-          setPricing({
-            two_in_room: data.two_in_room || 0,
-            four_in_room: data.four_in_room || 0,
-          });
-        }
-      } catch (e) {
-        console.log('fetchPricing error:', e);
-      }
-    };
-
-    // Realtime listener — only show active bookings (not expired/cancelled)
+    // Realtime listener — only pending/confirmed bookings
     const q = query(
       collection(db, 'bookings'),
       where('user_id', '==', user.uid),
@@ -886,7 +885,7 @@ export default function HostelBookingScreen() {
       }
     };
 
-    fetchPricing();
+    // FIX: only fetchHostels here — NO fetchPricing call
     fetchHostels();
     return () => unsubscribe();
   }, [router]);
@@ -933,41 +932,30 @@ export default function HostelBookingScreen() {
         ? pricing?.two_in_room ?? 0
         : pricing?.four_in_room ?? 0;
 
-      // Use Firestore doc ID to generate clean reference: UPSA-HSTL-FY5Y8HH
       const bookingRef = doc(collection(db, 'bookings'));
       const reference = generateReference(bookingRef.id);
 
-      // expires_at = now + 8 hours
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + 8);
 
       await setDoc(bookingRef, {
-        // Identity
         reference,
         user_id: user.uid,
-
-        // Room details
         hostel_name: bookingData.selectedHostel.name,
         floor_number: bookingData.selectedFloor,
         room_number: bookingData.selectedRoom,
         bed_number: bookingData.selectedBed,
         room_type: roomType,
         gender: bookingData.gender,
-
-        // Payment
         amount,
         status: 'pending',
         payment_status: 'unpaid',
         payment_reference: null,
         payment_method: null,
         paid_at: null,
-
-        // Timestamps
         expires_at: expiresAt,
         created_at: serverTimestamp(),
       });
-
-      // onSnapshot listener will automatically show BookingStatusScreen
 
     } catch (e) {
       console.log('handleConfirmBooking error:', e);
@@ -1009,7 +997,11 @@ export default function HostelBookingScreen() {
                   key={hostel.id}
                   hostel={hostel}
                   selected={bookingData.selectedHostel?.id === hostel.id}
-                  onPress={() => setBookingData({ ...bookingData, selectedHostel: hostel })}
+                  // FIX: fetch pricing for this hostel when selected
+                  onPress={() => {
+                    setBookingData({ ...bookingData, selectedHostel: hostel });
+                    fetchPricingForHostel(hostel.id);
+                  }}
                 />
               ))
             )}
