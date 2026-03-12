@@ -2,7 +2,6 @@ import { auth, db } from '@/lib/firebase';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -10,10 +9,11 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
+  setDoc,
   where
 } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { Alert, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Clipboard, Linking, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
 type Hostel = {
   id: string;
@@ -41,15 +41,22 @@ type BedBooking = {
 
 type UserBooking = {
   id: string;
+  reference: string | null;
   hostel_name: string | null;
   floor_number: number | null;
   room_number: string | null;
   bed_number: number | null;
   room_type: string | null;
-  price: number | null;
+  amount: number | null;
   gender: string | null;
+  // Booking status: pending | confirmed | cancelled | expired
   status: string | null;
-  reference: string | null;
+  // Payment status: unpaid | paid | failed | refunded
+  payment_status: string | null;
+  payment_reference: string | null;
+  payment_method: string | null;
+  paid_at: any;
+  expires_at: any;
   created_at: any;
 };
 
@@ -58,31 +65,65 @@ type HostelPricing = {
   four_in_room: number;
 };
 
-// Generate a unique reference number
-const generateReference = () => {
-  const year = new Date().getFullYear();
-  const random = Math.floor(10000 + Math.random() * 90000);
-  return `UPSA-${year}-${random}`;
+// Generate reference: UPSA-HSTL-FY5Y8HH (7 alphanumeric chars)
+const generateReference = (docId: string): string => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  // Use docId as seed for first part, random for rest
+  const base = docId.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  let result = base.slice(0, 4);
+  while (result.length < 7) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `UPSA-HSTL-${result.slice(0, 7)}`;
 };
 
-// Placeholder payment link — replace with real Zeepay link later
 const PAYMENT_BASE_URL = 'https://pay.upsa-campus.app/hostel';
+
+// ─── Booking Status Screen ───────────────────────────────────────────────────
 
 function BookingStatusScreen({ booking }: { booking: UserBooking }) {
   const router = useRouter();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (booking.reference) {
+      Clipboard.setString(booking.reference);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   const handlePayNow = async () => {
     const paymentUrl = `${PAYMENT_BASE_URL}?ref=${booking.reference}`;
     try {
-      const supported = await Linking.canOpenURL(paymentUrl);
-      if (supported) {
-        await Linking.openURL(paymentUrl);
-      } else {
-        Alert.alert('Error', 'Could not open payment link.');
-      }
+      await Linking.openURL(paymentUrl);
     } catch (e) {
       Alert.alert('Error', 'Could not open payment link.');
     }
+  };
+
+  const isExpired = booking.status === 'expired';
+  const isConfirmed = booking.status === 'confirmed';
+  const isPending = booking.status === 'pending';
+  const isCancelled = booking.status === 'cancelled';
+
+  const statusColor = () => {
+    if (isConfirmed) return 'bg-green-500';
+    if (isExpired || isCancelled) return 'bg-red-400';
+    return 'bg-orange-400';
+  };
+
+  const statusIcon = () => {
+    if (isConfirmed) return 'checkmark-circle';
+    if (isExpired || isCancelled) return 'close-circle';
+    return 'time';
+  };
+
+  const statusLabel = () => {
+    if (isConfirmed) return 'Confirmed';
+    if (isExpired) return 'Expired';
+    if (isCancelled) return 'Cancelled';
+    return 'Pending Payment';
   };
 
   return (
@@ -105,44 +146,73 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
 
             {/* Status Header */}
             <View className="mb-6 items-center">
-              <View className={`mb-3 h-16 w-16 items-center justify-center rounded-full ${
-                booking.status === 'confirmed' ? 'bg-green-500' : 'bg-orange-400'
-              }`}>
-                <Ionicons
-                  name={booking.status === 'confirmed' ? 'checkmark-circle' : 'time'}
-                  size={32}
-                  color="white"
-                />
+              <View className={`mb-3 h-16 w-16 items-center justify-center rounded-full ${statusColor()}`}>
+                <Ionicons name={statusIcon() as any} size={32} color="white" />
               </View>
               <Text className="mb-1 text-lg font-semibold text-slate-900">
                 {booking.hostel_name || 'Hostel'}
               </Text>
               <View className={`rounded-full px-3 py-1 ${
-                booking.status === 'confirmed' ? 'bg-green-100' : 'bg-orange-100'
+                isConfirmed ? 'bg-green-100' :
+                isExpired || isCancelled ? 'bg-red-100' : 'bg-orange-100'
               }`}>
-                <Text className={`text-sm font-medium capitalize ${
-                  booking.status === 'confirmed' ? 'text-green-700' : 'text-orange-700'
+                <Text className={`text-sm font-medium ${
+                  isConfirmed ? 'text-green-700' :
+                  isExpired || isCancelled ? 'text-red-700' : 'text-orange-700'
                 }`}>
-                  {booking.status === 'confirmed' ? 'Confirmed' : 'Pending Payment'}
+                  {statusLabel()}
                 </Text>
               </View>
             </View>
 
-            {/* Reference Number */}
+            {/* Reference Number with Copy Button */}
             {booking.reference && (
               <View className="mb-4 rounded-xl bg-slate-50 border border-slate-200 p-4">
-                <Text className="text-xs text-slate-500 mb-1 text-center">Booking Reference</Text>
-                <Text className="text-xl font-bold text-center text-slate-900 tracking-widest">
-                  {booking.reference}
+                <Text className="text-xs text-slate-500 mb-2 text-center">
+                  Booking Reference
                 </Text>
-                <Text className="text-xs text-slate-400 mt-1 text-center">
-                  Keep this reference safe
+                <View className="flex-row items-center justify-between">
+                  <View className="flex-1" />
+                  <Text className="text-xl font-bold text-slate-900 tracking-widest">
+                    {booking.reference}
+                  </Text>
+                  <View className="flex-1 items-end">
+                    <Pressable
+                      onPress={handleCopy}
+                      className="h-8 w-8 items-center justify-center rounded-lg bg-slate-200 active:opacity-70"
+                    >
+                      <Ionicons
+                        name={copied ? 'checkmark' : 'copy-outline'}
+                        size={16}
+                        color={copied ? '#10B981' : '#64748B'}
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+                <Text className="text-xs text-slate-400 mt-2 text-center">
+                  {copied ? '✓ Copied!' : 'Tap the copy icon to copy'}
                 </Text>
               </View>
             )}
 
+            {/* Payment Status Badge */}
+            <View className="mb-4 flex-row justify-center">
+              <View className={`rounded-full px-4 py-1 ${
+                booking.payment_status === 'paid' ? 'bg-green-100' :
+                booking.payment_status === 'failed' ? 'bg-red-100' : 'bg-gray-100'
+              }`}>
+                <Text className={`text-xs font-semibold ${
+                  booking.payment_status === 'paid' ? 'text-green-700' :
+                  booking.payment_status === 'failed' ? 'text-red-700' : 'text-gray-600'
+                }`}>
+                  Payment: {booking.payment_status === 'paid' ? 'Paid' :
+                            booking.payment_status === 'failed' ? 'Failed' : 'Unpaid'}
+                </Text>
+              </View>
+            </View>
+
             {/* Booking Details */}
-            <View className="space-y-4">
+            <View className="space-y-3">
               <View className="flex-row justify-between">
                 <Text className="text-sm text-slate-600">Floor:</Text>
                 <Text className="text-sm font-medium text-slate-900">
@@ -173,29 +243,64 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
                   {booking.gender || 'N/A'}
                 </Text>
               </View>
-              <View className="border-t border-gray-200 pt-4">
+              <View className="border-t border-gray-200 pt-3">
                 <View className="flex-row justify-between">
-                  <Text className="text-base font-semibold text-slate-900">Price:</Text>
+                  <Text className="text-base font-semibold text-slate-900">Amount:</Text>
                   <Text className="text-base font-bold text-primary">
-                    GHS {booking.price || 0}
+                    GHS {booking.amount || 0}
                   </Text>
                 </View>
               </View>
-              <View className="border-t border-gray-200 pt-4">
+
+              {/* Payment metadata — shown after payment */}
+              {booking.payment_reference && (
+                <View className="border-t border-gray-200 pt-3 space-y-2">
+                  <View className="flex-row justify-between">
+                    <Text className="text-sm text-slate-600">Payment Ref:</Text>
+                    <Text className="text-sm font-medium text-slate-900">
+                      {booking.payment_reference}
+                    </Text>
+                  </View>
+                  {booking.payment_method && (
+                    <View className="flex-row justify-between">
+                      <Text className="text-sm text-slate-600">Method:</Text>
+                      <Text className="text-sm font-medium capitalize text-slate-900">
+                        {booking.payment_method}
+                      </Text>
+                    </View>
+                  )}
+                  {booking.paid_at && (
+                    <View className="flex-row justify-between">
+                      <Text className="text-sm text-slate-600">Paid At:</Text>
+                      <Text className="text-sm font-medium text-slate-900">
+                        {booking.paid_at?.toDate?.()?.toLocaleString() || 'N/A'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+
+              <View className="border-t border-gray-200 pt-3">
                 <Text className="text-xs text-slate-500">
                   Booked on: {booking.created_at?.toDate?.()?.toLocaleDateString() || 'Unknown date'}
                 </Text>
+                {/* Expiry warning */}
+                {isPending && booking.expires_at && (
+                  <Text className="text-xs text-orange-500 mt-1">
+                    ⚠ Expires: {booking.expires_at?.toDate?.()?.toLocaleString() || 'N/A'}
+                  </Text>
+                )}
               </View>
             </View>
 
-            {/* Pending — show pay now button */}
-            {booking.status === 'pending' && (
+            {/* Pending — Pay Now */}
+            {isPending && booking.payment_status !== 'paid' && (
               <View className="mt-6">
                 <View className="mb-4 rounded-lg bg-amber-50 p-4">
                   <View className="flex-row items-start">
                     <Ionicons name="time-outline" size={20} color="#F59E0B" />
                     <Text className="ml-2 text-sm text-amber-800 flex-1">
-                      Your booking is pending. Please complete your payment using the reference number above to confirm your room.
+                      Complete your payment using the reference above. Your room is held for 8 hours.
                     </Text>
                   </View>
                 </View>
@@ -206,7 +311,32 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
                   <View className="flex-row items-center justify-center">
                     <Ionicons name="card-outline" size={20} color="white" />
                     <Text className="ml-2 text-base font-bold text-white">
-                      Pay Now — GHS {booking.price || 0}
+                      Pay Now — GHS {booking.amount || 0}
+                    </Text>
+                  </View>
+                </Pressable>
+              </View>
+            )}
+
+            {/* Payment Failed */}
+            {booking.payment_status === 'failed' && (
+              <View className="mt-6">
+                <View className="mb-4 rounded-lg bg-red-50 p-4">
+                  <View className="flex-row items-start">
+                    <Ionicons name="close-circle-outline" size={20} color="#EF4444" />
+                    <Text className="ml-2 text-sm text-red-800 flex-1">
+                      Your last payment failed. Please try again using the Pay Now button.
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={handlePayNow}
+                  className="rounded-xl bg-red-500 px-4 py-4 active:opacity-90"
+                >
+                  <View className="flex-row items-center justify-center">
+                    <Ionicons name="refresh-outline" size={20} color="white" />
+                    <Text className="ml-2 text-base font-bold text-white">
+                      Retry Payment — GHS {booking.amount || 0}
                     </Text>
                   </View>
                 </Pressable>
@@ -214,12 +344,36 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
             )}
 
             {/* Confirmed */}
-            {booking.status === 'confirmed' && (
+            {isConfirmed && (
               <View className="mt-6 rounded-lg bg-green-50 p-4">
                 <View className="flex-row items-center">
                   <Ionicons name="checkmark-circle-outline" size={20} color="#10B981" />
                   <Text className="ml-2 text-sm text-green-800 flex-1">
-                    Payment confirmed! You can now check in at the hostel. Show your reference number at reception.
+                    Payment confirmed! Show your reference number at reception to check in.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Expired */}
+            {isExpired && (
+              <View className="mt-6 rounded-lg bg-red-50 p-4">
+                <View className="flex-row items-center">
+                  <Ionicons name="alert-circle-outline" size={20} color="#EF4444" />
+                  <Text className="ml-2 text-sm text-red-800 flex-1">
+                    This booking has expired. Please make a new booking.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Cancelled */}
+            {isCancelled && (
+              <View className="mt-6 rounded-lg bg-red-50 p-4">
+                <View className="flex-row items-center">
+                  <Ionicons name="close-circle-outline" size={20} color="#EF4444" />
+                  <Text className="ml-2 text-sm text-red-800 flex-1">
+                    This booking has been cancelled. Please contact support if you need help.
                   </Text>
                 </View>
               </View>
@@ -232,6 +386,8 @@ function BookingStatusScreen({ booking }: { booking: UserBooking }) {
   );
 }
 
+// ─── Step Indicator ───────────────────────────────────────────────────────────
+
 const STEPS = ['Gender', 'Hostel', 'Floor', 'Room', 'Confirm'];
 
 function StepIndicator({ currentStep }: { currentStep: number }) {
@@ -240,7 +396,8 @@ function StepIndicator({ currentStep }: { currentStep: number }) {
       {STEPS.map((step, index) => (
         <View key={step} className="flex-1 flex-row items-center">
           <View className={`h-8 w-8 items-center justify-center rounded-full ${
-            index < currentStep ? 'bg-green-500' : index === currentStep ? 'bg-primary' : 'bg-gray-300'
+            index < currentStep ? 'bg-green-500' :
+            index === currentStep ? 'bg-primary' : 'bg-gray-300'
           }`}>
             {index < currentStep ? (
               <Ionicons name="checkmark" size={16} color="white" />
@@ -263,6 +420,8 @@ function StepIndicator({ currentStep }: { currentStep: number }) {
     </View>
   );
 }
+
+// ─── Cards ────────────────────────────────────────────────────────────────────
 
 function GenderCard({ gender, selected, onPress }: {
   gender: 'male' | 'female';
@@ -374,7 +533,9 @@ function RoomCard({ room, roomType, available, selected, onPress, pricing }: {
       }`}
     >
       <View className="flex-row items-center justify-between">
-        <Text className={`text-base font-semibold ${selected ? 'text-primary' : 'text-slate-900'}`}>
+        <Text className={`text-base font-semibold ${
+          selected ? 'text-primary' : 'text-slate-900'
+        }`}>
           {room}
         </Text>
         <View className="flex-row items-center gap-2">
@@ -393,6 +554,8 @@ function RoomCard({ room, roomType, available, selected, onPress, pricing }: {
     </Pressable>
   );
 }
+
+// ─── Bed Selection Modal ──────────────────────────────────────────────────────
 
 function BedSelectionModal({
   visible, room, roomType, onClose, onConfirm
@@ -415,13 +578,17 @@ function BedSelectionModal({
   const fetchBedBookings = async () => {
     try {
       setLoading(true);
-      const q = query(collection(db, 'bookings'), where('room_number', '==', room));
+      const q = query(
+        collection(db, 'bookings'),
+        where('room_number', '==', room),
+        where('status', 'in', ['pending', 'confirmed'])
+      );
       const querySnapshot = await getDocs(q);
       const bookings: BedBooking[] = [];
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
         bookings.push({
-          id: doc.id,
+          id: docSnap.id,
           room_number: data.room_number || '',
           bed_number: data.bed_number || 0,
           user_id: data.user_id || '',
@@ -452,8 +619,8 @@ function BedSelectionModal({
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View className="flex-1 bg-[#F2F4F6]">
-        <View className="bg-white px-5 pt-14 pb-4 shadow-sm">
-          <View className="flex-row items-center justify-between mb-6">
+        <View className="bg-white px-5 pt-14 pb-6 shadow-sm">
+          <View className="flex-row items-center justify-between mb-4">
             <Text className="text-xl font-bold text-slate-900">Room {room}</Text>
             <Pressable onPress={onClose} className="active:opacity-80">
               <Ionicons name="close" size={24} color="#6B7280" />
@@ -526,7 +693,7 @@ function BedSelectionModal({
               <Text className={`text-center text-base font-semibold ${
                 selectedBed !== null ? 'text-white' : 'text-gray-500'
               }`}>
-                Confirm
+                Confirm Bed
               </Text>
             </Pressable>
           </View>
@@ -535,6 +702,8 @@ function BedSelectionModal({
     </Modal>
   );
 }
+
+// ─── Confirm Card ─────────────────────────────────────────────────────────────
 
 function ConfirmCard({ bookingData, pricing, onConfirm }: {
   bookingData: BookingData;
@@ -590,7 +759,7 @@ function ConfirmCard({ bookingData, pricing, onConfirm }: {
         </View>
         <View className="border-t border-gray-200 pt-3">
           <View className="flex-row justify-between">
-            <Text className="text-base font-semibold text-slate-900">Price:</Text>
+            <Text className="text-base font-semibold text-slate-900">Amount:</Text>
             <Text className="text-base font-bold text-primary">GHS {price}</Text>
           </View>
         </View>
@@ -600,7 +769,7 @@ function ConfirmCard({ bookingData, pricing, onConfirm }: {
         <View className="flex-row items-start">
           <Ionicons name="information-circle-outline" size={18} color="#0088CC" />
           <Text className="ml-2 text-xs text-blue-700 flex-1">
-            After booking you will receive a reference number and a payment link to complete your reservation.
+            After booking you will receive a unique reference number and a payment link. Your room is held for 8 hours.
           </Text>
         </View>
       </View>
@@ -614,6 +783,8 @@ function ConfirmCard({ bookingData, pricing, onConfirm }: {
     </View>
   );
 }
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function HostelBookingScreen() {
   const router = useRouter();
@@ -639,7 +810,7 @@ export default function HostelBookingScreen() {
       return;
     }
 
-    // Fetch pricing from Firestore settings
+    // Fetch pricing from Firestore
     const fetchPricing = async () => {
       try {
         const pricingDoc = await getDoc(doc(db, 'settings', 'hostel_pricing'));
@@ -655,38 +826,46 @@ export default function HostelBookingScreen() {
       }
     };
 
-    // Real-time listener for existing booking
-    const q = query(collection(db, 'bookings'), where('user_id', '==', user.uid));
+    // Realtime listener — only show active bookings (not expired/cancelled)
+    const q = query(
+      collection(db, 'bookings'),
+      where('user_id', '==', user.uid),
+      where('status', 'in', ['pending', 'confirmed'])
+    );
     const unsubscribe = onSnapshot(q, (querySnapshot) => {
       const bookings: UserBooking[] = [];
       querySnapshot.forEach((docSnap) => {
         const data = docSnap.data();
         bookings.push({
           id: docSnap.id,
+          reference: data.reference || null,
           hostel_name: data.hostel_name || null,
           floor_number: data.floor_number ?? null,
           room_number: data.room_number || null,
           bed_number: data.bed_number ?? null,
           room_type: data.room_type || null,
-          price: data.price || null,
+          amount: data.amount || null,
           gender: data.gender || null,
           status: data.status || null,
-          reference: data.reference || null,
+          payment_status: data.payment_status || 'unpaid',
+          payment_reference: data.payment_reference || null,
+          payment_method: data.payment_method || null,
+          paid_at: data.paid_at || null,
+          expires_at: data.expires_at || null,
           created_at: data.created_at || null,
         });
       });
-      if (bookings.length > 0) {
-        setExistingBooking(bookings[0]);
-      } else {
-        setExistingBooking(null);
-      }
+      setExistingBooking(bookings.length > 0 ? bookings[0] : null);
     }, (e) => console.log('booking listener error:', e));
 
     // Fetch hostels
     const fetchHostels = async () => {
       try {
         setLoading(true);
-        const hostelQuery = query(collection(db, 'hostels'), where('is_active', '==', true));
+        const hostelQuery = query(
+          collection(db, 'hostels'),
+          where('is_active', '==', true)
+        );
         const querySnapshot = await getDocs(hostelQuery);
         const data: Hostel[] = [];
         querySnapshot.forEach((docSnap) => {
@@ -717,7 +896,8 @@ export default function HostelBookingScreen() {
   }
 
   const getRoomType = (roomNumber: string) => {
-    return roomNumber.endsWith('15') || roomNumber.endsWith('44') ? '2-in-room' : '4-in-room';
+    return roomNumber.endsWith('15') || roomNumber.endsWith('44')
+      ? '2-in-room' : '4-in-room';
   };
 
   const generateRooms = (floor: number) => {
@@ -749,29 +929,46 @@ export default function HostelBookingScreen() {
 
     try {
       const roomType = getRoomType(bookingData.selectedRoom);
-      const price = roomType === '2-in-room'
+      const amount = roomType === '2-in-room'
         ? pricing?.two_in_room ?? 0
         : pricing?.four_in_room ?? 0;
 
-      // FIX: generate reference number
-      const reference = generateReference();
+      // Use Firestore doc ID to generate clean reference: UPSA-HSTL-FY5Y8HH
+      const bookingRef = doc(collection(db, 'bookings'));
+      const reference = generateReference(bookingRef.id);
 
-      await addDoc(collection(db, 'bookings'), {
+      // expires_at = now + 8 hours
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 8);
+
+      await setDoc(bookingRef, {
+        // Identity
+        reference,
         user_id: user.uid,
+
+        // Room details
         hostel_name: bookingData.selectedHostel.name,
         floor_number: bookingData.selectedFloor,
         room_number: bookingData.selectedRoom,
         bed_number: bookingData.selectedBed,
         room_type: roomType,
-        price: price,
         gender: bookingData.gender,
+
+        // Payment
+        amount,
         status: 'pending',
-        reference: reference,
-        // FIX: serverTimestamp instead of new Date()
+        payment_status: 'unpaid',
+        payment_reference: null,
+        payment_method: null,
+        paid_at: null,
+
+        // Timestamps
+        expires_at: expiresAt,
         created_at: serverTimestamp(),
       });
 
-      // onSnapshot will automatically show BookingStatusScreen
+      // onSnapshot listener will automatically show BookingStatusScreen
+
     } catch (e) {
       console.log('handleConfirmBooking error:', e);
       Alert.alert('Error', 'Failed to submit booking. Please try again.');
@@ -821,7 +1018,10 @@ export default function HostelBookingScreen() {
 
       case 2:
         if (!bookingData.selectedHostel || !bookingData.gender) return null;
-        const availableFloors = getAvailableFloors(bookingData.selectedHostel.total_floors, bookingData.gender);
+        const availableFloors = getAvailableFloors(
+          bookingData.selectedHostel.total_floors,
+          bookingData.gender
+        );
         return (
           <View>
             {availableFloors.map((floor) => (
